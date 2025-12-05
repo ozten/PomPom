@@ -16,10 +16,10 @@ from pydantic import BaseModel
 
 app = FastAPI(title="PomPom Camera Server")
 
-# Allow CORS for local development
+# Allow CORS for local development (any localhost port)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:4173"],
+    allow_origin_regex=r"http://localhost:\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -143,6 +143,10 @@ async def detect_markers_base64(data: dict):
 
         if img is None:
             raise HTTPException(status_code=400, detail="Invalid image data")
+
+        # DEBUG: Save received image to disk
+        cv2.imwrite("debug_received.png", img)
+        print(f"DEBUG: Saved received image to debug_received.png ({img.shape})")
 
         height, width = img.shape[:2]
 

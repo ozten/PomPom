@@ -1,39 +1,71 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { startPolling, stopPolling, appState, updateState } from '$lib/state.svelte';
-	import {
-		detectMarkers,
-		loadImageAsImageData,
-		checkServerHealth,
-		type DetectedMarker
-	} from '$lib/aruco';
+	import { detectMarkers, checkServerHealth, type DetectedMarker } from '$lib/aruco';
 	import {
 		calculateHomography,
 		getProjectorMarkerPositions,
 		buildPointCorrespondences
 	} from '$lib/homography';
+	import {
+		PROJECTOR_WIDTH,
+		PROJECTOR_HEIGHT,
+		renderProjection,
+		loadMarkerImages
+	} from '$lib/projection-renderer';
+	import { drawPerspective } from '$lib/perspective-canvas';
 
-	// Detection state (local to this component)
+	// Canvas element reference
+	let canvas: HTMLCanvasElement;
+	let ctx: CanvasRenderingContext2D | null = null;
+
+	// Offscreen canvas for projection content
+	let projectionCanvas: HTMLCanvasElement;
+	let projectionCtx: CanvasRenderingContext2D | null = null;
+
+	// Loaded images
+	let wallImage: HTMLImageElement | null = null;
+	let markerImages: HTMLImageElement[] = [];
+
+	// Detection state
 	let isCapturing = $state(false);
 	let detectedMarkers = $state<DetectedMarker[]>([]);
 	let detectionError = $state<string | null>(null);
 	let calibrationComplete = $state(false);
 
-	// Camera server diagnostic state
+	// Camera server state
 	let serverStatus = $state<'checking' | 'ready' | 'error'>('checking');
 	let serverVersion = $state<string | null>(null);
 	let serverError = $state<string | null>(null);
 
-	// Fixture image for dev mode
-	const FIXTURE_IMAGE = '/fixtures/calibration_isolated.png';
-	// Projector dimensions (assumed 1920x1080)
-	const PROJECTOR_WIDTH = 1920;
-	const PROJECTOR_HEIGHT = 1080;
+	// Simulation configuration
+	const WALL_IMAGE_SRC = '/fixtures/IMG_0819.jpeg';
 
-	onMount(() => {
+	// Projection quad: where the projection appears on the wall (in wall image pixels)
+	// These 4 corners define the perspective-distorted projection area
+	const PROJECTION_QUAD = {
+		topLeft: { x: 240, y: 165 },
+		topRight: { x: 900, y: 290 },
+		bottomLeft: { x: 240, y: 700 },
+		bottomRight: { x: 910, y: 690 }
+	};
+
+	onMount(async () => {
 		startPolling(500);
-		// Check camera server
 		checkServer();
+
+		// Get canvas context
+		ctx = canvas.getContext('2d');
+
+		// Load images
+		await loadImages();
+
+		// Initial render
+		renderSimulation();
+	});
+
+	onDestroy(() => {
+		stopPolling();
 	});
 
 	async function checkServer() {
@@ -50,12 +82,83 @@
 		}
 	}
 
-	onDestroy(() => {
-		stopPolling();
+	async function loadImages() {
+		// Load wall image
+		wallImage = await loadImage(WALL_IMAGE_SRC);
+
+		// Set canvas size to match wall image
+		canvas.width = wallImage.width;
+		canvas.height = wallImage.height;
+
+		// Create offscreen projection canvas (same size as projector output)
+		projectionCanvas = document.createElement('canvas');
+		projectionCanvas.width = PROJECTOR_WIDTH;
+		projectionCanvas.height = PROJECTOR_HEIGHT;
+		projectionCtx = projectionCanvas.getContext('2d');
+
+		// Load marker images (using shared loader)
+		markerImages = await loadMarkerImages();
+	}
+
+	function loadImage(src: string): Promise<HTMLImageElement> {
+		return new Promise((resolve, reject) => {
+			const img = new Image();
+			img.onload = () => resolve(img);
+			img.onerror = reject;
+			img.src = src;
+		});
+	}
+
+	/**
+	 * Render the simulation to the canvas
+	 * Uses the shared projection renderer to get the exact same output as /projection
+	 */
+	function renderSimulation() {
+		if (!ctx || !wallImage || !projectionCtx) return;
+
+		const q = PROJECTION_QUAD;
+
+		// 1. Draw wall background
+		ctx.drawImage(wallImage, 0, 0);
+
+		// 2. Render projection content to offscreen canvas (using shared renderer)
+		renderProjection(projectionCtx, appState.current, markerImages);
+
+		// 3. Draw projection onto wall using WebGL perspective transform
+		drawPerspective(ctx, projectionCanvas, q);
+
+		// 4. Draw detected markers if any (green circles)
+		if (detectedMarkers.length > 0) {
+			ctx.strokeStyle = '#00ff00';
+			ctx.lineWidth = 3;
+			for (const marker of detectedMarkers) {
+				// Draw circle at marker center
+				const cx = (marker.corners[0].x + marker.corners[2].x) / 2;
+				const cy = (marker.corners[0].y + marker.corners[2].y) / 2;
+				ctx.beginPath();
+				ctx.arc(cx, cy, 20, 0, Math.PI * 2);
+				ctx.stroke();
+
+				// Draw marker ID
+				ctx.fillStyle = '#00ff00';
+				ctx.font = '16px monospace';
+				ctx.fillText(`ID:${marker.id}`, cx + 25, cy + 5);
+			}
+		}
+	}
+
+	// Re-render when state changes
+	$effect(() => {
+		// Track relevant state
+		const _ = appState.current.mode;
+		const __ = appState.current.calibration.status;
+		const ___ = detectedMarkers;
+
+		// Re-render
+		renderSimulation();
 	});
 
 	async function startCalibration() {
-		// Reset detection state
 		detectedMarkers = [];
 		detectionError = null;
 		calibrationComplete = false;
@@ -82,15 +185,18 @@
 		detectionError = null;
 
 		try {
-			// Load fixture image as ImageData
-			const imageData = await loadImageAsImageData(FIXTURE_IMAGE);
+			// Get image data directly from the canvas
+			const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
 
-			// Run ArUco detection
+			// Run ArUco detection via server
 			const result = await detectMarkers(imageData);
 			detectedMarkers = result.markers;
 
+			// Re-render to show detected markers
+			renderSimulation();
+
 			if (detectedMarkers.length === 0) {
-				detectionError = 'No markers detected';
+				detectionError = result.error || 'No markers detected';
 				return;
 			}
 
@@ -142,7 +248,6 @@
 		calibrationComplete = true;
 	}
 
-	// Sort markers by ID for display
 	function sortedMarkers(markers: DetectedMarker[]): DetectedMarker[] {
 		return [...markers].sort((a, b) => a.id - b.id);
 	}
@@ -164,14 +269,14 @@
 	<!-- Camera Server Status -->
 	<div class="mb-4 p-2 border rounded text-sm" class:border-green-500={serverStatus === 'ready'} class:border-red-500={serverStatus === 'error'} class:border-yellow-500={serverStatus === 'checking'}>
 		{#if serverStatus === 'checking'}
-			<span class="text-yellow-400">⏳ Checking camera server...</span>
+			<span class="text-yellow-400">Checking camera server...</span>
 		{:else if serverStatus === 'ready'}
-			<span class="text-green-400">✓ Camera server ready</span>
+			<span class="text-green-400">Camera server ready</span>
 			{#if serverVersion}
 				<span class="text-gray-400 ml-2">(OpenCV {serverVersion})</span>
 			{/if}
 		{:else}
-			<span class="text-red-400">✗ Camera server offline</span>
+			<span class="text-red-400">Camera server offline</span>
 			{#if serverError}
 				<span class="text-red-300 ml-2">— {serverError}</span>
 			{/if}
@@ -214,43 +319,10 @@
 		<p class="mb-4 text-green-400 text-sm">Calibration complete! Homography matrix stored.</p>
 	{/if}
 
-	<!-- Simulation View: Wall scene with projection overlay -->
-	<div class="relative inline-block" style="perspective: 800px;">
-		<!-- Base: Wall scene -->
-		<img
-			src="/fixtures/IMG_0819.jpeg"
-			alt="Wall scene"
-			class="max-w-full h-auto"
-			style="max-height: 70vh;"
-		/>
-
-		<!-- Simulated projection area with perspective distortion -->
-		<div
-			class="absolute"
-			style="
-				top: 5%;
-				left: 12%;
-				width: 65%;
-				height: 50%;
-				transform: rotateY(30deg) rotateX(0deg) rotateZ(0deg);
-				transform-origin: center center;
-			"
-		>
-			{#if appState.current.mode === 'calibrating' && appState.current.calibration.status === 'showing-markers'}
-				<!-- Calibration: white background with markers -->
-				<div class="w-full h-full bg-white relative" style="opacity: 0.92;">
-					<img src="/markers/marker-0.svg" alt="Marker 0" class="absolute top-2 left-2 w-10 h-10" />
-					<img src="/markers/marker-1.svg" alt="Marker 1" class="absolute top-2 right-2 w-10 h-10" />
-					<img src="/markers/marker-2.svg" alt="Marker 2" class="absolute bottom-2 left-2 w-10 h-10" />
-					<img src="/markers/marker-3.svg" alt="Marker 3" class="absolute bottom-2 right-2 w-10 h-10" />
-				</div>
-			{:else}
-				<!-- Idle: dark projection color -->
-				<div
-					class="w-full h-full"
-					style="background-color: {appState.current.projection.color}; opacity: 0.85;"
-				></div>
-			{/if}
-		</div>
-	</div>
+	<!-- Canvas-based Simulation -->
+	<canvas
+		bind:this={canvas}
+		class="max-w-full h-auto border border-gray-700"
+		style="max-height: 70vh;"
+	></canvas>
 </div>
