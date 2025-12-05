@@ -1,19 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 6 6" width="120" height="120">
-  <!-- ArUco DICT_4X4_50 ID 3 -->
-  <!-- Black border -->
+  <!-- ArUco DICT_4X4_50 ID 3 - correct pattern -->
   <rect width="6" height="6" fill="black"/>
-  <!-- Inner 4x4 pattern -->
-  <!-- Row 0: 1 0 0 1 -->
+  <!-- Row 1: 1 0 0 1 -->
   <rect x="1" y="1" width="1" height="1" fill="white"/>
   <rect x="4" y="1" width="1" height="1" fill="white"/>
-  <!-- Row 1: 1 1 1 1 -->
+  <!-- Row 2: 1 0 0 1 -->
   <rect x="1" y="2" width="1" height="1" fill="white"/>
-  <rect x="2" y="2" width="1" height="1" fill="white"/>
-  <rect x="3" y="2" width="1" height="1" fill="white"/>
   <rect x="4" y="2" width="1" height="1" fill="white"/>
-  <!-- Row 2: 0 0 0 0 -->
-  <!-- (all black) -->
-  <!-- Row 3: 1 0 0 1 -->
-  <rect x="1" y="4" width="1" height="1" fill="white"/>
-  <rect x="4" y="4" width="1" height="1" fill="white"/>
+  <!-- Row 3: 0 1 0 0 -->
+  <rect x="2" y="3" width="1" height="1" fill="white"/>
+  <!-- Row 4: 0 1 1 0 -->
+  <rect x="2" y="4" width="1" height="1" fill="white"/>
+  <rect x="3" y="4" width="1" height="1" fill="white"/>
 </svg>
