@@ -56,6 +56,19 @@
 	let serverVersion = $state<string | null>(null);
 	let serverError = $state<string | null>(null);
 
+	// Dev/Live mode state
+	let imageMode = $state<'dev' | 'live'>('dev');
+	let webcamStream = $state<MediaStream | null>(null);
+	let videoElement: HTMLVideoElement;
+	let availableCameras = $state<MediaDeviceInfo[]>([]);
+	let selectedCameraId = $state<string>('');
+	let webcamError = $state<string | null>(null);
+	let liveFrame = $state<ImageData | null>(null);
+
+	// Image save state
+	let isSaving = $state(false);
+	let saveMessage = $state<string | null>(null);
+
 	// Simulation configuration
 	const WALL_IMAGE_SRC = '/fixtures/IMG_0819.jpeg';
 
@@ -98,7 +111,155 @@
 		// Stop animations
 		felizNavidadAnim?.stop();
 		pomPomAnim?.stop();
+		// Stop webcam
+		stopWebcam();
 	});
+
+	// Webcam functions
+	async function enumerateCameras() {
+		try {
+			// Request permission first to get labeled devices
+			const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+			tempStream.getTracks().forEach(track => track.stop());
+
+			const devices = await navigator.mediaDevices.enumerateDevices();
+			availableCameras = devices.filter(d => d.kind === 'videoinput');
+			if (availableCameras.length > 0 && !selectedCameraId) {
+				selectedCameraId = availableCameras[0].deviceId;
+			}
+		} catch (err) {
+			webcamError = err instanceof Error ? err.message : 'Failed to enumerate cameras';
+		}
+	}
+
+	async function startWebcam() {
+		webcamError = null;
+		try {
+			// Stop existing stream if any
+			stopWebcam();
+
+			const constraints: MediaStreamConstraints = {
+				video: selectedCameraId
+					? {
+							deviceId: { exact: selectedCameraId },
+							width: { ideal: 4096 },
+							height: { ideal: 2160 }
+						}
+					: {
+							width: { ideal: 4096 },
+							height: { ideal: 2160 }
+						}
+			};
+
+			webcamStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+			// Wait for video element to be ready
+			if (videoElement) {
+				videoElement.srcObject = webcamStream;
+				await videoElement.play();
+			}
+		} catch (err) {
+			webcamError = err instanceof Error ? err.message : 'Failed to start webcam';
+			webcamStream = null;
+		}
+	}
+
+	function stopWebcam() {
+		if (webcamStream) {
+			webcamStream.getTracks().forEach(track => track.stop());
+			webcamStream = null;
+		}
+		if (videoElement) {
+			videoElement.srcObject = null;
+		}
+		liveFrame = null;
+	}
+
+	function captureWebcamFrame(): ImageData | null {
+		if (!videoElement || !webcamStream || videoElement.readyState < 2) {
+			return null;
+		}
+
+		// Create temporary canvas to capture frame
+		const tempCanvas = document.createElement('canvas');
+		tempCanvas.width = videoElement.videoWidth;
+		tempCanvas.height = videoElement.videoHeight;
+		const tempCtx = tempCanvas.getContext('2d');
+		if (!tempCtx) return null;
+
+		tempCtx.drawImage(videoElement, 0, 0);
+		return tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+	}
+
+	// Handle mode switch
+	async function switchToLiveMode() {
+		imageMode = 'live';
+		await enumerateCameras();
+		if (availableCameras.length > 0) {
+			await startWebcam();
+		}
+	}
+
+	function switchToDevMode() {
+		imageMode = 'dev';
+		stopWebcam();
+		renderSimulation();
+	}
+
+	// Handle camera selection change
+	async function onCameraChange() {
+		if (imageMode === 'live' && selectedCameraId) {
+			await startWebcam();
+		}
+	}
+
+	// Save webcam image to disk
+	async function saveWebcamImage() {
+		if (imageMode !== 'live' || !videoElement || !webcamStream) {
+			saveMessage = 'Webcam not active';
+			return;
+		}
+
+		isSaving = true;
+		saveMessage = null;
+
+		try {
+			// Capture frame to canvas and convert to base64
+			const tempCanvas = document.createElement('canvas');
+			tempCanvas.width = videoElement.videoWidth;
+			tempCanvas.height = videoElement.videoHeight;
+			const tempCtx = tempCanvas.getContext('2d');
+			if (!tempCtx) {
+				throw new Error('Failed to get canvas context');
+			}
+
+			tempCtx.drawImage(videoElement, 0, 0);
+			const imageData = tempCanvas.toDataURL('image/png');
+
+			// Send to server to save
+			const response = await fetch('/api/save-image', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ imageData })
+			});
+
+			const result = await response.json();
+
+			if (result.success) {
+				saveMessage = `Saved: ${result.filename}`;
+			} else {
+				saveMessage = `Error: ${result.error}`;
+			}
+		} catch (err) {
+			saveMessage = err instanceof Error ? err.message : 'Failed to save image';
+		} finally {
+			isSaving = false;
+			// Clear message after 3 seconds
+			setTimeout(() => {
+				saveMessage = null;
+			}, 3000);
+		}
+	}
 
 	async function checkServer() {
 		serverStatus = 'checking';
@@ -243,15 +404,30 @@
 		detectionError = null;
 
 		try {
-			// Get image data directly from the canvas
-			const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
+			let imageData: ImageData;
+
+			if (imageMode === 'live') {
+				// Capture frame from webcam
+				const frame = captureWebcamFrame();
+				if (!frame) {
+					detectionError = 'Failed to capture webcam frame. Is the camera ready?';
+					return;
+				}
+				imageData = frame;
+				liveFrame = frame; // Store for display
+			} else {
+				// Get image data from the simulation canvas (dev mode)
+				imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
+			}
 
 			// Run ArUco detection via server
 			const result = await detectMarkers(imageData);
 			detectedMarkers = result.markers;
 
-			// Re-render to show detected markers
-			renderSimulation();
+			// Re-render to show detected markers (dev mode only)
+			if (imageMode === 'dev') {
+				renderSimulation();
+			}
 
 			if (detectedMarkers.length === 0) {
 				detectionError = result.error || 'No markers detected';
@@ -336,6 +512,71 @@
 		Calibration: <code>{appState.current.calibration.status}</code>
 	</p>
 
+	<!-- Dev/Live Mode Toggle -->
+	<div class="mb-4 p-3 border border-gray-600 rounded">
+		<div class="flex items-center gap-4 mb-2">
+			<span class="text-sm font-medium">Image Source:</span>
+			<label class="flex items-center gap-2 cursor-pointer">
+				<input
+					type="radio"
+					name="imageMode"
+					value="dev"
+					checked={imageMode === 'dev'}
+					onchange={switchToDevMode}
+					class="accent-blue-500"
+				/>
+				<span class="text-sm">Dev (Fixture)</span>
+			</label>
+			<label class="flex items-center gap-2 cursor-pointer">
+				<input
+					type="radio"
+					name="imageMode"
+					value="live"
+					checked={imageMode === 'live'}
+					onchange={switchToLiveMode}
+					class="accent-blue-500"
+				/>
+				<span class="text-sm">Live (Webcam)</span>
+			</label>
+		</div>
+
+		{#if imageMode === 'live'}
+			<div class="flex items-center gap-2 mt-2">
+				<label class="text-sm text-gray-400">Camera:</label>
+				<select
+					bind:value={selectedCameraId}
+					onchange={onCameraChange}
+					class="bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm"
+				>
+					{#each availableCameras as camera}
+						<option value={camera.deviceId}>
+							{camera.label || `Camera ${availableCameras.indexOf(camera) + 1}`}
+						</option>
+					{/each}
+				</select>
+				{#if webcamStream}
+					<span class="text-green-400 text-sm">Connected</span>
+					<button
+						onclick={saveWebcamImage}
+						disabled={isSaving}
+						class="ml-4 px-3 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded text-sm"
+					>
+						{isSaving ? 'Saving...' : 'Save Image'}
+					</button>
+					{#if saveMessage}
+						<span class="ml-2 text-sm" class:text-green-400={saveMessage.startsWith('Saved')} class:text-red-400={saveMessage.startsWith('Error')}>
+							{saveMessage}
+						</span>
+					{/if}
+				{:else if webcamError}
+					<span class="text-red-400 text-sm">{webcamError}</span>
+				{:else}
+					<span class="text-yellow-400 text-sm">Connecting...</span>
+				{/if}
+			</div>
+		{/if}
+	</div>
+
 	<!-- Camera Server Status -->
 	<div class="mb-4 p-2 border rounded text-sm" class:border-green-500={serverStatus === 'ready'} class:border-red-500={serverStatus === 'error'} class:border-yellow-500={serverStatus === 'checking'}>
 		{#if serverStatus === 'checking'}
@@ -403,10 +644,30 @@
 		<p class="mb-4 text-green-400 text-sm">Calibration complete! Homography matrix stored.</p>
 	{/if}
 
-	<!-- Canvas-based Simulation -->
-	<canvas
-		bind:this={canvas}
-		class="max-w-full h-auto border border-gray-700"
-		style="max-height: 70vh;"
-	></canvas>
+	<!-- Video/Canvas Display -->
+	{#if imageMode === 'live'}
+		<!-- Live webcam feed -->
+		<div class="relative">
+			<video
+				bind:this={videoElement}
+				class="max-w-full h-auto border border-gray-700"
+				style="max-height: 70vh;"
+				autoplay
+				playsinline
+				muted
+			></video>
+			{#if detectedMarkers.length > 0}
+				<div class="absolute top-2 left-2 bg-black/70 px-2 py-1 rounded text-sm">
+					<span class="text-green-400">{detectedMarkers.length} markers detected</span>
+				</div>
+			{/if}
+		</div>
+	{:else}
+		<!-- Dev mode simulation canvas -->
+		<canvas
+			bind:this={canvas}
+			class="max-w-full h-auto border border-gray-700"
+			style="max-height: 70vh;"
+		></canvas>
+	{/if}
 </div>
