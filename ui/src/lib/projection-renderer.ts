@@ -4,10 +4,30 @@
  */
 
 import type { AppState } from './types';
+import type { AnimationRenderState } from './animations/types';
+
+/** Default render state when no animation is active */
+const DEFAULT_RENDER_STATE: AnimationRenderState = {
+	opacity: 1,
+	color: '#FFD700' // Gold
+};
 
 // Projector resolution
 export const PROJECTOR_WIDTH = 1920;
 export const PROJECTOR_HEIGHT = 1080;
+
+// Hardcoded mask paths for prototyping
+const HARDCODED_MASKS = ['/masks/feliz-navidad.png', '/masks/garland.png'];
+
+// Projection area bounds in camera/mask image coordinates
+// This is the bounding box of where the projection appears in the camera view
+// Derived from PROJECTION_QUAD in /control
+const MASK_CROP_BOUNDS = {
+	x: 240,
+	y: 165,
+	width: 670, // ~910 - 240
+	height: 535 // ~700 - 165
+};
 
 // Marker configuration
 export const MARKER_SIZE = 200;
@@ -37,11 +57,19 @@ export const MARKER_POSITIONS = getMarkerPositions();
 /**
  * Render the projection content to a canvas context
  * This is the source of truth for what the projector outputs
+ *
+ * @param ctx - Canvas 2D context to render to
+ * @param state - Application state
+ * @param markerImages - ArUco marker images for calibration
+ * @param samMaskImages - SAM mask images [feliz-navidad, garland]
+ * @param animationStates - Per-mask animation states [feliz-navidad, garland]
  */
 export function renderProjection(
 	ctx: CanvasRenderingContext2D,
 	state: AppState,
-	markerImages: HTMLImageElement[]
+	markerImages: HTMLImageElement[],
+	samMaskImages: HTMLImageElement[] = [],
+	animationStates: AnimationRenderState[] = []
 ): void {
 	const { mode, calibration, projection } = state;
 
@@ -62,12 +90,57 @@ export function renderProjection(
 			}
 		}
 	} else if (mode === 'projecting') {
-		// Projecting mode: background + masks
+		// Projecting mode: dark background + animated masks
+		// Each mask has its own animation state (opacity, color)
+
+		// Draw background first
 		ctx.fillStyle = projection.color;
 		ctx.fillRect(0, 0, PROJECTOR_WIDTH, PROJECTOR_HEIGHT);
 
-		// TODO: Draw transformed masks
-		// for (const mask of projection.masks) { ... }
+		// Render each mask with its animation state
+		for (let i = 0; i < samMaskImages.length; i++) {
+			const maskImg = samMaskImages[i];
+			const animState = animationStates[i] || DEFAULT_RENDER_STATE;
+
+			// Skip if fully transparent
+			if (animState.opacity <= 0) continue;
+
+			// Save context state
+			ctx.save();
+
+			// Set global alpha for opacity
+			ctx.globalAlpha = animState.opacity;
+
+			// Create temporary canvas for this mask
+			const tempCanvas = document.createElement('canvas');
+			tempCanvas.width = PROJECTOR_WIDTH;
+			tempCanvas.height = PROJECTOR_HEIGHT;
+			const tempCtx = tempCanvas.getContext('2d')!;
+
+			// Draw mask to temp canvas
+			tempCtx.drawImage(
+				maskImg,
+				MASK_CROP_BOUNDS.x,
+				MASK_CROP_BOUNDS.y,
+				MASK_CROP_BOUNDS.width,
+				MASK_CROP_BOUNDS.height,
+				0,
+				0,
+				PROJECTOR_WIDTH,
+				PROJECTOR_HEIGHT
+			);
+
+			// Apply color tint using source-in
+			tempCtx.globalCompositeOperation = 'source-in';
+			tempCtx.fillStyle = animState.color;
+			tempCtx.fillRect(0, 0, PROJECTOR_WIDTH, PROJECTOR_HEIGHT);
+
+			// Draw the tinted mask to main canvas
+			ctx.drawImage(tempCanvas, 0, 0);
+
+			// Restore context state
+			ctx.restore();
+		}
 	} else {
 		// Idle mode: solid color
 		ctx.fillStyle = projection.color;
@@ -111,4 +184,19 @@ export async function loadMarkerImages(): Promise<HTMLImageElement[]> {
 		loadImage('/markers/marker-2.svg'),
 		loadImage('/markers/marker-3.svg')
 	]);
+}
+
+/**
+ * Load SAM mask images for projection
+ */
+export async function loadSamMaskImages(): Promise<HTMLImageElement[]> {
+	const loadImage = (src: string): Promise<HTMLImageElement> =>
+		new Promise((resolve, reject) => {
+			const img = new Image();
+			img.onload = () => resolve(img);
+			img.onerror = reject;
+			img.src = src;
+		});
+
+	return Promise.all(HARDCODED_MASKS.map((src) => loadImage(src)));
 }

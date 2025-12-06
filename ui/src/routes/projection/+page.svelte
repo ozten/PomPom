@@ -5,34 +5,82 @@
 		PROJECTOR_WIDTH,
 		PROJECTOR_HEIGHT,
 		renderProjection,
-		loadMarkerImages
+		loadMarkerImages,
+		loadSamMaskImages
 	} from '$lib/projection-renderer';
+	import {
+		createFelizNavidadAnimation,
+		createPomPomAnimation,
+		type Animation,
+		type AnimationRenderState
+	} from '$lib/animations';
 
 	let canvas: HTMLCanvasElement;
 	let ctx: CanvasRenderingContext2D | null = null;
 	let markerImages: HTMLImageElement[] = [];
+	let samMaskImages: HTMLImageElement[] = [];
+
+	// Animation instances
+	let felizNavidadAnim: Animation | null = null;
+	let pomPomAnim: Animation | null = null;
+
+	// Current animation render states
+	let animationStates: AnimationRenderState[] = [
+		{ opacity: 1, color: '#FFD700' }, // Feliz Navidad
+		{ opacity: 1, color: '#FFD700' } // Pom Pom
+	];
 
 	onMount(async () => {
 		startPolling(500);
 		ctx = canvas.getContext('2d');
 		markerImages = await loadMarkerImages();
+		samMaskImages = await loadSamMaskImages();
+
+		// Create animations with update callbacks
+		felizNavidadAnim = createFelizNavidadAnimation((state) => {
+			animationStates[0] = state;
+			render();
+		});
+
+		pomPomAnim = createPomPomAnimation((state) => {
+			animationStates[1] = state;
+			render();
+		});
+
 		render();
 	});
 
 	onDestroy(() => {
 		stopPolling();
+		// Stop animations
+		felizNavidadAnim?.stop();
+		pomPomAnim?.stop();
 	});
 
 	function render() {
 		if (!ctx) return;
-		renderProjection(ctx, appState.current, markerImages);
+		renderProjection(ctx, appState.current, markerImages, samMaskImages, animationStates);
 	}
 
-	// Re-render when state changes
+	// Start/stop animations based on mode
 	$effect(() => {
-		const _ = appState.current.mode;
-		const __ = appState.current.calibration.status;
-		const ___ = appState.current.projection;
+		const mode = appState.current.mode;
+
+		if (mode === 'projecting') {
+			// Start animations when projecting
+			felizNavidadAnim?.start();
+			pomPomAnim?.start();
+		} else {
+			// Stop animations when not projecting
+			felizNavidadAnim?.stop();
+			pomPomAnim?.stop();
+		}
+	});
+
+	// Re-render when state changes (for non-animated states)
+	$effect(() => {
+		const _ = appState.current.calibration.status;
+		const __ = appState.current.projection;
 		render();
 	});
 </script>

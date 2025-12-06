@@ -11,9 +11,16 @@
 		PROJECTOR_WIDTH,
 		PROJECTOR_HEIGHT,
 		renderProjection,
-		loadMarkerImages
+		loadMarkerImages,
+		loadSamMaskImages
 	} from '$lib/projection-renderer';
 	import { drawPerspective } from '$lib/perspective-canvas';
+	import {
+		createFelizNavidadAnimation,
+		createPomPomAnimation,
+		type Animation,
+		type AnimationRenderState
+	} from '$lib/animations';
 
 	// Canvas element reference
 	let canvas: HTMLCanvasElement;
@@ -26,6 +33,17 @@
 	// Loaded images
 	let wallImage: HTMLImageElement | null = null;
 	let markerImages: HTMLImageElement[] = [];
+	let samMaskImages: HTMLImageElement[] = [];
+
+	// Animation instances
+	let felizNavidadAnim: Animation | null = null;
+	let pomPomAnim: Animation | null = null;
+
+	// Current animation render states
+	let animationStates: AnimationRenderState[] = [
+		{ opacity: 1, color: '#FFD700' }, // Feliz Navidad
+		{ opacity: 1, color: '#FFD700' } // Pom Pom
+	];
 
 	// Detection state
 	let isCapturing = $state(false);
@@ -60,12 +78,26 @@
 		// Load images
 		await loadImages();
 
+		// Create animations with update callbacks
+		felizNavidadAnim = createFelizNavidadAnimation((state) => {
+			animationStates[0] = state;
+			renderSimulation();
+		});
+
+		pomPomAnim = createPomPomAnimation((state) => {
+			animationStates[1] = state;
+			renderSimulation();
+		});
+
 		// Initial render
 		renderSimulation();
 	});
 
 	onDestroy(() => {
 		stopPolling();
+		// Stop animations
+		felizNavidadAnim?.stop();
+		pomPomAnim?.stop();
 	});
 
 	async function checkServer() {
@@ -98,6 +130,9 @@
 
 		// Load marker images (using shared loader)
 		markerImages = await loadMarkerImages();
+
+		// Load SAM mask images for projection
+		samMaskImages = await loadSamMaskImages();
 	}
 
 	function loadImage(src: string): Promise<HTMLImageElement> {
@@ -122,7 +157,7 @@
 		ctx.drawImage(wallImage, 0, 0);
 
 		// 2. Render projection content to offscreen canvas (using shared renderer)
-		renderProjection(projectionCtx, appState.current, markerImages);
+		renderProjection(projectionCtx, appState.current, markerImages, samMaskImages, animationStates);
 
 		// 3. Draw projection onto wall using WebGL perspective transform
 		drawPerspective(ctx, projectionCanvas, q);
@@ -147,12 +182,26 @@
 		}
 	}
 
+	// Start/stop animations based on mode
+	$effect(() => {
+		const mode = appState.current.mode;
+
+		if (mode === 'projecting') {
+			// Start animations when projecting
+			felizNavidadAnim?.start();
+			pomPomAnim?.start();
+		} else {
+			// Stop animations when not projecting
+			felizNavidadAnim?.stop();
+			pomPomAnim?.stop();
+		}
+	});
+
 	// Re-render when state changes
 	$effect(() => {
 		// Track relevant state
-		const _ = appState.current.mode;
-		const __ = appState.current.calibration.status;
-		const ___ = detectedMarkers;
+		const _ = appState.current.calibration.status;
+		const __ = detectedMarkers;
 
 		// Re-render
 		renderSimulation();
@@ -251,6 +300,18 @@
 	function sortedMarkers(markers: DetectedMarker[]): DetectedMarker[] {
 		return [...markers].sort((a, b) => a.id - b.id);
 	}
+
+	async function startProjecting() {
+		await updateState({
+			mode: 'projecting'
+		});
+	}
+
+	async function stopProjecting() {
+		await updateState({
+			mode: 'idle'
+		});
+	}
 </script>
 
 <svelte:head>
@@ -296,6 +357,20 @@
 		{/if}
 		<button onclick={stopCalibration} disabled={appState.current.mode !== 'calibrating'}>
 			Stop
+		</button>
+		<span class="mx-2">|</span>
+		<button
+			onclick={startProjecting}
+			disabled={appState.current.mode === 'projecting'}
+			class="bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600"
+		>
+			Project Masks
+		</button>
+		<button
+			onclick={stopProjecting}
+			disabled={appState.current.mode !== 'projecting'}
+		>
+			Stop Projection
 		</button>
 	</div>
 
