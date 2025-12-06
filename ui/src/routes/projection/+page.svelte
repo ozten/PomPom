@@ -8,6 +8,8 @@
 		loadMarkerImages,
 		loadSamMaskImages
 	} from '$lib/projection-renderer';
+	import { SIMULATION_QUAD } from '$lib/projection-config';
+	import { transformMasksToProjector } from '$lib/mask-transform';
 	import {
 		createFelizNavidadAnimation,
 		createPomPomAnimation,
@@ -18,7 +20,7 @@
 	let canvas: HTMLCanvasElement;
 	let ctx: CanvasRenderingContext2D | null = null;
 	let markerImages: HTMLImageElement[] = [];
-	let samMaskImages: HTMLImageElement[] = [];
+	let transformedMasks: HTMLCanvasElement[] = [];
 
 	// Animation instances
 	let felizNavidadAnim: Animation | null = null;
@@ -34,7 +36,11 @@
 		startPolling(500);
 		ctx = canvas.getContext('2d');
 		markerImages = await loadMarkerImages();
-		samMaskImages = await loadSamMaskImages();
+
+		// Load SAM masks and transform to projector space
+		// TODO: Use calibrated homography when available instead of SIMULATION_QUAD
+		const rawMasks = await loadSamMaskImages();
+		transformedMasks = transformMasksToProjector(rawMasks, SIMULATION_QUAD);
 
 		// Create animations with update callbacks
 		felizNavidadAnim = createFelizNavidadAnimation((state) => {
@@ -59,7 +65,7 @@
 
 	function render() {
 		if (!ctx) return;
-		renderProjection(ctx, appState.current, markerImages, samMaskImages, animationStates);
+		renderProjection(ctx, appState.current, markerImages, transformedMasks, animationStates);
 	}
 
 	// Start/stop animations based on mode

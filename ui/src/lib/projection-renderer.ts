@@ -5,6 +5,10 @@
 
 import type { AppState } from './types';
 import type { AnimationRenderState } from './animations/types';
+import { PROJECTOR_WIDTH, PROJECTOR_HEIGHT } from './projection-config';
+
+// Re-export for backwards compatibility
+export { PROJECTOR_WIDTH, PROJECTOR_HEIGHT };
 
 /** Default render state when no animation is active */
 const DEFAULT_RENDER_STATE: AnimationRenderState = {
@@ -12,22 +16,8 @@ const DEFAULT_RENDER_STATE: AnimationRenderState = {
 	color: '#FFD700' // Gold
 };
 
-// Projector resolution
-export const PROJECTOR_WIDTH = 1920;
-export const PROJECTOR_HEIGHT = 1080;
-
 // Hardcoded mask paths for prototyping
 const HARDCODED_MASKS = ['/masks/feliz-navidad.png', '/masks/garland.png'];
-
-// Projection area bounds in camera/mask image coordinates
-// This is the bounding box of where the projection appears in the camera view
-// Derived from PROJECTION_QUAD in /control
-const MASK_CROP_BOUNDS = {
-	x: 240,
-	y: 165,
-	width: 670, // ~910 - 240
-	height: 535 // ~700 - 165
-};
 
 // Marker configuration
 export const MARKER_SIZE = 200;
@@ -61,14 +51,14 @@ export const MARKER_POSITIONS = getMarkerPositions();
  * @param ctx - Canvas 2D context to render to
  * @param state - Application state
  * @param markerImages - ArUco marker images for calibration
- * @param samMaskImages - SAM mask images [feliz-navidad, garland]
+ * @param transformedMasks - Pre-transformed mask canvases at projector resolution
  * @param animationStates - Per-mask animation states [feliz-navidad, garland]
  */
 export function renderProjection(
 	ctx: CanvasRenderingContext2D,
 	state: AppState,
 	markerImages: HTMLImageElement[],
-	samMaskImages: HTMLImageElement[] = [],
+	transformedMasks: HTMLCanvasElement[] = [],
 	animationStates: AnimationRenderState[] = []
 ): void {
 	const { mode, calibration, projection } = state;
@@ -97,9 +87,9 @@ export function renderProjection(
 		ctx.fillStyle = projection.color;
 		ctx.fillRect(0, 0, PROJECTOR_WIDTH, PROJECTOR_HEIGHT);
 
-		// Render each mask with its animation state
-		for (let i = 0; i < samMaskImages.length; i++) {
-			const maskImg = samMaskImages[i];
+		// Render each pre-transformed mask with its animation state
+		for (let i = 0; i < transformedMasks.length; i++) {
+			const maskCanvas = transformedMasks[i];
 			const animState = animationStates[i] || DEFAULT_RENDER_STATE;
 
 			// Skip if fully transparent
@@ -111,24 +101,14 @@ export function renderProjection(
 			// Set global alpha for opacity
 			ctx.globalAlpha = animState.opacity;
 
-			// Create temporary canvas for this mask
+			// Create temporary canvas for color tinting
 			const tempCanvas = document.createElement('canvas');
 			tempCanvas.width = PROJECTOR_WIDTH;
 			tempCanvas.height = PROJECTOR_HEIGHT;
 			const tempCtx = tempCanvas.getContext('2d')!;
 
-			// Draw mask to temp canvas
-			tempCtx.drawImage(
-				maskImg,
-				MASK_CROP_BOUNDS.x,
-				MASK_CROP_BOUNDS.y,
-				MASK_CROP_BOUNDS.width,
-				MASK_CROP_BOUNDS.height,
-				0,
-				0,
-				PROJECTOR_WIDTH,
-				PROJECTOR_HEIGHT
-			);
+			// Draw pre-transformed mask to temp canvas
+			tempCtx.drawImage(maskCanvas, 0, 0);
 
 			// Apply color tint using source-in
 			tempCtx.globalCompositeOperation = 'source-in';

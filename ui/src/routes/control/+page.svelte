@@ -14,6 +14,8 @@
 		loadMarkerImages,
 		loadSamMaskImages
 	} from '$lib/projection-renderer';
+	import { SIMULATION_QUAD } from '$lib/projection-config';
+	import { transformMasksToProjector } from '$lib/mask-transform';
 	import { drawPerspective } from '$lib/perspective-canvas';
 	import {
 		createFelizNavidadAnimation,
@@ -33,7 +35,7 @@
 	// Loaded images
 	let wallImage: HTMLImageElement | null = null;
 	let markerImages: HTMLImageElement[] = [];
-	let samMaskImages: HTMLImageElement[] = [];
+	let transformedMasks: HTMLCanvasElement[] = [];
 
 	// Animation instances
 	let felizNavidadAnim: Animation | null = null;
@@ -58,15 +60,6 @@
 
 	// Simulation configuration
 	const WALL_IMAGE_SRC = '/fixtures/IMG_0819.jpeg';
-
-	// Projection quad: where the projection appears on the wall (in wall image pixels)
-	// These 4 corners define the perspective-distorted projection area
-	const PROJECTION_QUAD = {
-		topLeft: { x: 240, y: 165 },
-		topRight: { x: 900, y: 290 },
-		bottomLeft: { x: 240, y: 700 },
-		bottomRight: { x: 910, y: 690 }
-	};
 
 	onMount(async () => {
 		startPolling(500);
@@ -131,8 +124,9 @@
 		// Load marker images (using shared loader)
 		markerImages = await loadMarkerImages();
 
-		// Load SAM mask images for projection
-		samMaskImages = await loadSamMaskImages();
+		// Load SAM mask images and transform them to projector space
+		const rawMasks = await loadSamMaskImages();
+		transformedMasks = transformMasksToProjector(rawMasks, SIMULATION_QUAD);
 	}
 
 	function loadImage(src: string): Promise<HTMLImageElement> {
@@ -151,7 +145,7 @@
 	function renderSimulation() {
 		if (!ctx || !wallImage || !projectionCtx) return;
 
-		const q = PROJECTION_QUAD;
+		const q = SIMULATION_QUAD;
 
 		// 1. Draw wall background with darkening (simulates dark room)
 		ctx.save();
@@ -162,7 +156,7 @@
 		ctx.restore();
 
 		// 2. Render projection content to offscreen canvas (using shared renderer)
-		renderProjection(projectionCtx, appState.current, markerImages, samMaskImages, animationStates);
+		renderProjection(projectionCtx, appState.current, markerImages, transformedMasks, animationStates);
 
 		// 3. Draw projection onto wall using WebGL perspective transform
 		// Use "screen" blend mode - black has no effect, colors add light
