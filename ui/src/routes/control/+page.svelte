@@ -153,14 +153,23 @@
 
 		const q = PROJECTION_QUAD;
 
-		// 1. Draw wall background
+		// 1. Draw wall background with darkening (simulates dark room)
+		ctx.save();
 		ctx.drawImage(wallImage, 0, 0);
+		// Darken the image to simulate projecting in a dark room
+		ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'; // 60% darkening
+		ctx.fillRect(0, 0, canvas.width, canvas.height);
+		ctx.restore();
 
 		// 2. Render projection content to offscreen canvas (using shared renderer)
 		renderProjection(projectionCtx, appState.current, markerImages, samMaskImages, animationStates);
 
 		// 3. Draw projection onto wall using WebGL perspective transform
+		// Use "screen" blend mode - black has no effect, colors add light
+		ctx.save();
+		ctx.globalCompositeOperation = 'screen';
 		drawPerspective(ctx, projectionCanvas, q);
+		ctx.restore();
 
 		// 4. Draw detected markers if any (green circles)
 		if (detectedMarkers.length > 0) {
