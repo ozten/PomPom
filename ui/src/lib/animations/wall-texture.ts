@@ -62,11 +62,25 @@ function hslToHex(h: number, s: number, l: number): string {
 	return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
+export interface WallTextureConfig {
+	id: string;
+	hueOffset?: number; // Offset to add to hue (0-360)
+	saturation?: number; // 0-100, default 80
+	lightness?: number; // 0-100, default 60
+}
+
 /**
- * Create a Wall Texture color cycling animation
+ * Create a Wall Texture color cycling animation with optional configuration
  */
-export function createWallTextureAnimation(onUpdate: (state: AnimationRenderState) => void): Animation {
+export function createWallTextureAnimation(
+	onUpdate: (state: AnimationRenderState) => void,
+	config?: WallTextureConfig
+): Animation {
 	const state = createInitialState();
+	const id = config?.id ?? 'wall-texture';
+	const hueOffset = config?.hueOffset ?? 0;
+	const saturation = config?.saturation ?? 80;
+	const lightness = config?.lightness ?? 60;
 
 	function update(timestamp: number) {
 		if (!state.running) return;
@@ -79,10 +93,10 @@ export function createWallTextureAnimation(onUpdate: (state: AnimationRenderStat
 		// Calculate elapsed time and current hue
 		const elapsed = timestamp - state.startTime;
 		const progress = (elapsed % CYCLE_DURATION_MS) / CYCLE_DURATION_MS;
-		state.hue = progress * 360;
+		state.hue = (progress * 360 + hueOffset) % 360;
 
-		// Convert HSL to hex (saturation: 80%, lightness: 60% for vibrant colors)
-		const color = hslToHex(state.hue, 80, 60);
+		// Convert HSL to hex
+		const color = hslToHex(state.hue, saturation, lightness);
 
 		// Notify listener
 		onUpdate({
@@ -95,7 +109,7 @@ export function createWallTextureAnimation(onUpdate: (state: AnimationRenderStat
 	}
 
 	return {
-		id: 'wall-texture',
+		id,
 
 		start() {
 			if (state.running) return;
@@ -113,11 +127,36 @@ export function createWallTextureAnimation(onUpdate: (state: AnimationRenderStat
 		},
 
 		getRenderState(): AnimationRenderState {
-			const color = hslToHex(state.hue, 80, 60);
+			const color = hslToHex(state.hue, saturation, lightness);
 			return {
 				opacity: state.opacity,
 				color: color
 			};
 		}
+	};
+}
+
+/**
+ * Create animations for all three sub-mask types with offset hues
+ * Islands: starts at 0° (red/orange)
+ * Land: starts at 120° (green)
+ * Water: starts at 240° (blue)
+ */
+export function createSubMaskAnimations(
+	onUpdate: (subMaskId: string, state: AnimationRenderState) => void
+): { islands: Animation; land: Animation; water: Animation } {
+	return {
+		islands: createWallTextureAnimation(
+			(state) => onUpdate('wall-texture:islands', state),
+			{ id: 'wall-texture:islands', hueOffset: 0, saturation: 85, lightness: 55 }
+		),
+		land: createWallTextureAnimation(
+			(state) => onUpdate('wall-texture:land', state),
+			{ id: 'wall-texture:land', hueOffset: 120, saturation: 70, lightness: 45 }
+		),
+		water: createWallTextureAnimation(
+			(state) => onUpdate('wall-texture:water', state),
+			{ id: 'wall-texture:water', hueOffset: 240, saturation: 75, lightness: 50 }
+		)
 	};
 }

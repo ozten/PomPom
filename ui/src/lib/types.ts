@@ -10,11 +10,18 @@ export interface AppState {
 	};
 }
 
+export interface SubMasks {
+	islands: string; // base64 image data
+	land: string;
+	water: string;
+}
+
 export interface TransformedMask {
 	id: string;
 	imageData: string;
 	bounds: { x: number; y: number; width: number; height: number };
 	enabled?: boolean; // Default true if undefined
+	subMasks?: SubMasks; // Optional sub-mask breakdown for wall-texture
 }
 
 export const DEFAULT_STATE: AppState = {

@@ -5,6 +5,7 @@
 
 import type { AppState } from './types';
 import type { AnimationRenderState } from './animations/types';
+import type { IslandPhoto } from './animations/island-photos';
 import { PROJECTOR_WIDTH, PROJECTOR_HEIGHT } from './projection-config';
 
 // Re-export for backwards compatibility
@@ -53,13 +54,17 @@ export const MARKER_POSITIONS = getMarkerPositions();
  * @param markerImages - ArUco marker images for calibration
  * @param transformedMasks - Pre-transformed mask canvases at projector resolution
  * @param animationStates - Per-mask animation states [feliz-navidad, garland]
+ * @param islandPhotos - Photos to render in island positions
+ * @param islandsMask - The islands-only mask for clipping photos
  */
 export function renderProjection(
 	ctx: CanvasRenderingContext2D,
 	state: AppState,
 	markerImages: HTMLImageElement[],
 	transformedMasks: HTMLCanvasElement[] = [],
-	animationStates: AnimationRenderState[] = []
+	animationStates: AnimationRenderState[] = [],
+	islandPhotos: IslandPhoto[] = [],
+	islandsMask?: HTMLCanvasElement
 ): void {
 	const { mode, calibration, projection } = state;
 
@@ -121,11 +126,70 @@ export function renderProjection(
 			// Restore context state
 			ctx.restore();
 		}
+
+		// Render island photos if available
+		if (islandPhotos.length > 0 && islandsMask) {
+			renderIslandPhotos(ctx, islandPhotos, islandsMask);
+		}
 	} else {
 		// Idle mode: solid color
 		ctx.fillStyle = projection.color;
 		ctx.fillRect(0, 0, PROJECTOR_WIDTH, PROJECTOR_HEIGHT);
 	}
+}
+
+/**
+ * Render photos into island positions, clipped to the islands mask
+ */
+function renderIslandPhotos(
+	ctx: CanvasRenderingContext2D,
+	photos: IslandPhoto[],
+	islandsMask: HTMLCanvasElement
+): void {
+	// Create a temporary canvas for compositing
+	const tempCanvas = document.createElement('canvas');
+	tempCanvas.width = PROJECTOR_WIDTH;
+	tempCanvas.height = PROJECTOR_HEIGHT;
+	const tempCtx = tempCanvas.getContext('2d')!;
+
+	// Draw all photos to temp canvas
+	for (const photo of photos) {
+		if (!photo.image) continue;
+
+		const { minX, minY, maxX, maxY } = photo.boundingBox;
+		const width = maxX - minX + 1;
+		const height = maxY - minY + 1;
+
+		// Draw photo scaled to fill the bounding box
+		// Use object-fit: cover behavior - scale to fill, crop excess
+		const imgAspect = photo.image.width / photo.image.height;
+		const boxAspect = width / height;
+
+		let srcX = 0,
+			srcY = 0,
+			srcW = photo.image.width,
+			srcH = photo.image.height;
+
+		if (imgAspect > boxAspect) {
+			// Image is wider - crop sides
+			srcW = photo.image.height * boxAspect;
+			srcX = (photo.image.width - srcW) / 2;
+		} else {
+			// Image is taller - crop top/bottom
+			srcH = photo.image.width / boxAspect;
+			srcY = (photo.image.height - srcH) / 2;
+		}
+
+		tempCtx.drawImage(photo.image, srcX, srcY, srcW, srcH, minX, minY, width, height);
+	}
+
+	// Apply the islands mask using destination-in
+	// This keeps only the parts of the photos that overlap with islands
+	tempCtx.globalCompositeOperation = 'destination-in';
+	tempCtx.drawImage(islandsMask, 0, 0);
+
+	// Draw the masked photos to the main canvas
+	ctx.drawImage(tempCanvas, 0, 0);
 }
 
 /**

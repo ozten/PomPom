@@ -17,13 +17,17 @@
 	import { transformMasksToProjector } from '$lib/mask-transform';
 	import { generateMasks, loadMaskImage, type GeneratedMask } from '$lib/sam';
 	import { generateWallTextureMask } from '$lib/wall-mask';
+	import { detectIslands, type IslandDetectionResult } from '$lib/island-detection';
 	import { drawPerspective } from '$lib/perspective-canvas';
 	import {
 		createFelizNavidadAnimation,
 		createPomPomAnimation,
 		createWallTextureAnimation,
+		createIslandPhotosAnimation,
 		type Animation,
-		type AnimationRenderState
+		type AnimationRenderState,
+		type IslandPhoto,
+		type IslandPhotosAnimation
 	} from '$lib/animations';
 
 	// Canvas element reference
@@ -83,12 +87,40 @@
 	let wallMaskError = $state<string | null>(null);
 	let wallMaskUrl = $state<string | null>(null);
 
+	// Island detection state
+	let isDetectingIslands = $state(false);
+	let islandDetectionError = $state<string | null>(null);
+	let islandDetectionResult = $state<IslandDetectionResult | null>(null);
+
+	// Island photos animation state
+	let islandPhotosAnim: IslandPhotosAnimation | null = null;
+	let islandPhotos = $state<IslandPhoto[]>([]);
+	let islandsMaskCanvas = $state<HTMLCanvasElement | null>(null);
+
 	// Per-mask enabled state and regeneration tracking
 	let enabledMasks = $state<Set<string>>(new Set(['feliz-navidad', 'pom-pom', 'wall-texture']));
 	let regeneratingMask = $state<string | null>(null);
 
 	// Simulation configuration
 	const WALL_IMAGE_SRC = '/fixtures/webcam_capture.png';
+
+	/**
+	 * Svelte action to draw a scaled canvas to a preview element
+	 */
+	function drawScaledCanvas(node: HTMLCanvasElement, sourceCanvas: HTMLCanvasElement) {
+		const ctx = node.getContext('2d');
+		if (ctx && sourceCanvas) {
+			ctx.drawImage(sourceCanvas, 0, 0, node.width, node.height);
+		}
+		return {
+			update(newSource: HTMLCanvasElement) {
+				if (ctx && newSource) {
+					ctx.clearRect(0, 0, node.width, node.height);
+					ctx.drawImage(newSource, 0, 0, node.width, node.height);
+				}
+			}
+		};
+	}
 
 	onMount(async () => {
 		startPolling(500);
@@ -116,6 +148,12 @@
 			renderSimulation();
 		}));
 
+		// Create island photos animation
+		islandPhotosAnim = createIslandPhotosAnimation((photos) => {
+			islandPhotos = photos;
+			renderSimulation();
+		});
+
 		// Initial render
 		renderSimulation();
 	});
@@ -124,6 +162,7 @@
 		stopPolling();
 		// Stop all animations
 		animations.forEach(anim => anim.stop());
+		islandPhotosAnim?.stop();
 		// Stop webcam
 		stopWebcam();
 	});
@@ -346,7 +385,15 @@
 				activeAnimStates.push(animationStates.get(mask.id) || { opacity: 1, color: '#FFD700' });
 			}
 		}
-		renderProjection(projectionCtx, appState.current, markerImages, activeMasks, activeAnimStates);
+		renderProjection(
+			projectionCtx,
+			appState.current,
+			markerImages,
+			activeMasks,
+			activeAnimStates,
+			islandPhotos,
+			islandsMaskCanvas || undefined
+		);
 
 		// 3. Draw projection onto wall using WebGL perspective transform
 		// Use "screen" blend mode - black has no effect, colors add light
@@ -684,6 +731,80 @@
 	}
 
 	/**
+	 * Detect islands in the current wall-texture mask
+	 * Splits into islands/land/water sub-masks
+	 */
+	async function detectIslandsFromWallMask() {
+		isDetectingIslands = true;
+		islandDetectionError = null;
+		islandDetectionResult = null;
+
+		try {
+			// Find the wall-texture mask in state
+			const wallMask = appState.current.projection.masks.find(m => m.id === 'wall-texture');
+			if (!wallMask) {
+				throw new Error('No wall-texture mask found. Generate one first.');
+			}
+
+			console.log('Detecting islands in wall-texture mask...');
+
+			// Convert base64 to canvas for processing
+			const maskCanvas = await base64ToCanvas(
+				wallMask.imageData,
+				wallMask.bounds.width,
+				wallMask.bounds.height
+			);
+
+			// Run island detection
+			const result = detectIslands(maskCanvas);
+			islandDetectionResult = result;
+
+			console.log('Island detection complete:', {
+				islandCount: result.stats.islandCount,
+				islandPixels: result.stats.islandPixels,
+				landPixels: result.stats.landPixels,
+				waterPixels: result.stats.waterPixels
+			});
+
+			// Update the wall-texture mask with sub-masks
+			const updatedMasks = appState.current.projection.masks.map(m => {
+				if (m.id === 'wall-texture') {
+					return {
+						...m,
+						subMasks: {
+							islands: result.islands.toDataURL('image/png'),
+							land: result.land.toDataURL('image/png'),
+							water: result.water.toDataURL('image/png')
+						}
+					};
+				}
+				return m;
+			});
+
+			await updateState({
+				projection: { ...appState.current.projection, masks: updatedMasks }
+			});
+
+			// Save the islands mask canvas for rendering
+			islandsMaskCanvas = result.islands;
+
+			// Pass island info to the photos animation and start it
+			if (islandPhotosAnim) {
+				const islandComponents = result.stats.components.filter(c => c.isIsland);
+				islandPhotosAnim.setIslands(islandComponents);
+				islandPhotosAnim.start();
+			}
+
+			console.log('Sub-masks saved to state, animation started');
+		} catch (err) {
+			islandDetectionError = err instanceof Error ? err.message : 'Island detection failed';
+			console.error('Island detection error:', err);
+		} finally {
+			isDetectingIslands = false;
+		}
+	}
+
+	/**
 	 * Convert base64 image data to canvas element
 	 */
 	function base64ToCanvas(imageData: string, width: number, height: number): Promise<HTMLCanvasElement> {
@@ -940,6 +1061,13 @@
 		>
 			{isGeneratingWall ? 'Generating Wall...' : 'Generate Wall Mask'}
 		</button>
+		<button
+			onclick={detectIslandsFromWallMask}
+			disabled={isDetectingIslands}
+			class="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600"
+		>
+			{isDetectingIslands ? 'Detecting...' : 'Detect Islands'}
+		</button>
 	</div>
 
 	<!-- Detection Results -->
@@ -954,6 +1082,54 @@
 
 	{#if wallMaskError}
 		<p class="mb-4 text-red-400 text-sm">Wall Mask Error: {wallMaskError}</p>
+	{/if}
+
+	{#if islandDetectionError}
+		<p class="mb-4 text-red-400 text-sm">Island Detection Error: {islandDetectionError}</p>
+	{/if}
+
+	{#if islandDetectionResult}
+		<div class="mb-4 p-3 bg-gray-800 rounded text-sm">
+			<p class="text-cyan-400 mb-2">Island Detection Results:</p>
+			<p class="text-gray-300">
+				Found {islandDetectionResult.stats.islandCount} islands |
+				Islands: {islandDetectionResult.stats.islandPixels.toLocaleString()} px |
+				Land: {islandDetectionResult.stats.landPixels.toLocaleString()} px |
+				Water: {islandDetectionResult.stats.waterPixels.toLocaleString()} px
+			</p>
+			<div class="flex gap-4 mt-2">
+				<div>
+					<p class="text-xs text-gray-400 mb-1">Islands</p>
+					<canvas
+						width={192}
+						height={108}
+						class="border border-cyan-500"
+						style="background: #333;"
+						use:drawScaledCanvas={islandDetectionResult.islands}
+					></canvas>
+				</div>
+				<div>
+					<p class="text-xs text-gray-400 mb-1">Land</p>
+					<canvas
+						width={192}
+						height={108}
+						class="border border-green-500"
+						style="background: #333;"
+						use:drawScaledCanvas={islandDetectionResult.land}
+					></canvas>
+				</div>
+				<div>
+					<p class="text-xs text-gray-400 mb-1">Water</p>
+					<canvas
+						width={192}
+						height={108}
+						class="border border-blue-500"
+						style="background: #333;"
+						use:drawScaledCanvas={islandDetectionResult.water}
+					></canvas>
+				</div>
+			</div>
+		</div>
 	{/if}
 
 	{#if generatedMasks.length > 0 || isGeneratingWall}

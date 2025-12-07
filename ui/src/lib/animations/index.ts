@@ -16,6 +16,14 @@ export {
 } from './pom-pom';
 export {
 	createWallTextureAnimation,
+	createSubMaskAnimations,
 	CYCLE_DURATION_MS as WALL_TEXTURE_CYCLE_DURATION_MS,
-	type WallTextureState
+	type WallTextureState,
+	type WallTextureConfig
 } from './wall-texture';
+export {
+	createIslandPhotosAnimation,
+	SWAP_INTERVAL_MS,
+	type IslandPhoto,
+	type IslandPhotosAnimation
+} from './island-photos';
