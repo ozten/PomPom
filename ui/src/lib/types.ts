@@ -14,6 +14,7 @@ export interface TransformedMask {
 	id: string;
 	imageData: string;
 	bounds: { x: number; y: number; width: number; height: number };
+	enabled?: boolean; // Default true if undefined
 }
 
 export const DEFAULT_STATE: AppState = {

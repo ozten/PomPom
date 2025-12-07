@@ -10,6 +10,7 @@
 	import {
 		createFelizNavidadAnimation,
 		createPomPomAnimation,
+		createWallTextureAnimation,
 		type Animation,
 		type AnimationRenderState
 	} from '$lib/animations';
@@ -19,15 +20,15 @@
 	let markerImages: HTMLImageElement[] = [];
 	let transformedMasks: HTMLCanvasElement[] = [];
 
-	// Animation instances
-	let felizNavidadAnim: Animation | null = null;
-	let pomPomAnim: Animation | null = null;
+	// Animation instances (keyed by mask ID)
+	let animations: Map<string, Animation> = new Map();
 
-	// Current animation render states
-	let animationStates: AnimationRenderState[] = [
-		{ opacity: 1, color: '#FFD700' }, // Feliz Navidad
-		{ opacity: 1, color: '#FFD700' } // Pom Pom
-	];
+	// Current animation render states (keyed by mask ID)
+	let animationStates: Map<string, AnimationRenderState> = new Map([
+		['feliz-navidad', { opacity: 1, color: '#FFD700' }],
+		['pom-pom', { opacity: 1, color: '#FFD700' }],
+		['wall-texture', { opacity: 1, color: '#FF0000' }]
+	]);
 
 	onMount(async () => {
 		startPolling(500);
@@ -38,15 +39,20 @@
 		transformedMasks = [];
 
 		// Create animations with update callbacks
-		felizNavidadAnim = createFelizNavidadAnimation((state) => {
-			animationStates[0] = state;
+		animations.set('feliz-navidad', createFelizNavidadAnimation((state) => {
+			animationStates.set('feliz-navidad', state);
 			render();
-		});
+		}));
 
-		pomPomAnim = createPomPomAnimation((state) => {
-			animationStates[1] = state;
+		animations.set('pom-pom', createPomPomAnimation((state) => {
+			animationStates.set('pom-pom', state);
 			render();
-		});
+		}));
+
+		animations.set('wall-texture', createWallTextureAnimation((state) => {
+			animationStates.set('wall-texture', state);
+			render();
+		}));
 
 		render();
 	});
@@ -70,14 +76,15 @@
 	}
 
 	// Load masks from shared state when they change
-	let lastMaskIds = '';
+	let lastMaskState = '';
 	$effect(() => {
 		const masks = appState.current.projection.masks;
-		const currentIds = masks.map(m => m.id).join(',');
+		// Track both IDs and enabled state
+		const currentState = masks.map(m => `${m.id}:${m.enabled !== false}`).join(',');
 
-		// Only reload if masks changed
-		if (currentIds !== lastMaskIds && masks.length > 0) {
-			lastMaskIds = currentIds;
+		// Only reload if masks or enabled state changed
+		if (currentState !== lastMaskState && masks.length > 0) {
+			lastMaskState = currentState;
 			Promise.all(
 				masks.map(m => base64ToCanvas(m.imageData, m.bounds.width, m.bounds.height))
 			).then(canvases => {
@@ -93,29 +100,46 @@
 
 	onDestroy(() => {
 		stopPolling();
-		// Stop animations
-		felizNavidadAnim?.stop();
-		pomPomAnim?.stop();
+		// Stop all animations
+		animations.forEach(anim => anim.stop());
 	});
 
 	function render() {
 		if (!ctx) return;
-		renderProjection(ctx, appState.current, markerImages, transformedMasks, animationStates);
+		// Filter masks by enabled state and get corresponding animation states
+		const masks = appState.current.projection.masks;
+		const activeMasks: HTMLCanvasElement[] = [];
+		const activeAnimStates: AnimationRenderState[] = [];
+		for (let i = 0; i < masks.length; i++) {
+			const mask = masks[i];
+			if (mask?.enabled !== false && transformedMasks[i]) {
+				activeMasks.push(transformedMasks[i]);
+				activeAnimStates.push(animationStates.get(mask.id) || { opacity: 1, color: '#FFD700' });
+			}
+		}
+		renderProjection(ctx, appState.current, markerImages, activeMasks, activeAnimStates);
 	}
 
-	// Start/stop animations based on mode
+	// Start/stop animations based on mode AND mask enabled state
 	$effect(() => {
 		const mode = appState.current.mode;
+		const masks = appState.current.projection.masks;
+		const isProjecting = mode === 'projecting';
 
-		if (mode === 'projecting') {
-			// Start animations when projecting
-			felizNavidadAnim?.start();
-			pomPomAnim?.start();
-		} else {
-			// Stop animations when not projecting
-			felizNavidadAnim?.stop();
-			pomPomAnim?.stop();
-		}
+		// Build set of enabled mask IDs
+		const enabledMaskIds = new Set(
+			masks.filter(m => m.enabled !== false).map(m => m.id)
+		);
+
+		// Each animation runs only if projecting AND its mask is enabled
+		animations.forEach((anim, maskId) => {
+			const shouldRun = isProjecting && enabledMaskIds.has(maskId);
+			if (shouldRun) {
+				anim.start();
+			} else {
+				anim.stop();
+			}
+		});
 	});
 
 	// Re-render when state changes (for non-animated states)

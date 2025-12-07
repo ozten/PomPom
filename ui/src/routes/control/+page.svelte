@@ -16,10 +16,12 @@
 	import { SIMULATION_QUAD, SAM_PROMPTS, SIMULATION_IMAGE_PATH } from '$lib/projection-config';
 	import { transformMasksToProjector } from '$lib/mask-transform';
 	import { generateMasks, loadMaskImage, type GeneratedMask } from '$lib/sam';
+	import { generateWallTextureMask } from '$lib/wall-mask';
 	import { drawPerspective } from '$lib/perspective-canvas';
 	import {
 		createFelizNavidadAnimation,
 		createPomPomAnimation,
+		createWallTextureAnimation,
 		type Animation,
 		type AnimationRenderState
 	} from '$lib/animations';
@@ -37,15 +39,15 @@
 	let markerImages: HTMLImageElement[] = [];
 	let transformedMasks: HTMLCanvasElement[] = [];
 
-	// Animation instances
-	let felizNavidadAnim: Animation | null = null;
-	let pomPomAnim: Animation | null = null;
+	// Animation instances (keyed by mask ID)
+	let animations: Map<string, Animation> = new Map();
 
-	// Current animation render states
-	let animationStates: AnimationRenderState[] = [
-		{ opacity: 1, color: '#FFD700' }, // Feliz Navidad
-		{ opacity: 1, color: '#FFD700' } // Pom Pom
-	];
+	// Current animation render states (keyed by mask ID)
+	let animationStates: Map<string, AnimationRenderState> = new Map([
+		['feliz-navidad', { opacity: 1, color: '#FFD700' }],
+		['pom-pom', { opacity: 1, color: '#FFD700' }],
+		['wall-texture', { opacity: 1, color: '#FF0000' }]
+	]);
 
 	// Detection state
 	let isCapturing = $state(false);
@@ -76,6 +78,15 @@
 	let generationError = $state<string | null>(null);
 	let generatedMasks = $state<GeneratedMask[]>([]);
 
+	// Wall texture mask state
+	let isGeneratingWall = $state(false);
+	let wallMaskError = $state<string | null>(null);
+	let wallMaskUrl = $state<string | null>(null);
+
+	// Per-mask enabled state and regeneration tracking
+	let enabledMasks = $state<Set<string>>(new Set(['feliz-navidad', 'pom-pom', 'wall-texture']));
+	let regeneratingMask = $state<string | null>(null);
+
 	// Simulation configuration
 	const WALL_IMAGE_SRC = '/fixtures/webcam_capture.png';
 
@@ -90,15 +101,20 @@
 		await loadImages();
 
 		// Create animations with update callbacks
-		felizNavidadAnim = createFelizNavidadAnimation((state) => {
-			animationStates[0] = state;
+		animations.set('feliz-navidad', createFelizNavidadAnimation((state) => {
+			animationStates.set('feliz-navidad', state);
 			renderSimulation();
-		});
+		}));
 
-		pomPomAnim = createPomPomAnimation((state) => {
-			animationStates[1] = state;
+		animations.set('pom-pom', createPomPomAnimation((state) => {
+			animationStates.set('pom-pom', state);
 			renderSimulation();
-		});
+		}));
+
+		animations.set('wall-texture', createWallTextureAnimation((state) => {
+			animationStates.set('wall-texture', state);
+			renderSimulation();
+		}));
 
 		// Initial render
 		renderSimulation();
@@ -106,9 +122,8 @@
 
 	onDestroy(() => {
 		stopPolling();
-		// Stop animations
-		felizNavidadAnim?.stop();
-		pomPomAnim?.stop();
+		// Stop all animations
+		animations.forEach(anim => anim.stop());
 		// Stop webcam
 		stopWebcam();
 	});
@@ -321,7 +336,17 @@
 		ctx.restore();
 
 		// 2. Render projection content to offscreen canvas (using shared renderer)
-		renderProjection(projectionCtx, appState.current, markerImages, transformedMasks, animationStates);
+		// Filter masks based on enabled state and get corresponding animation states
+		const activeMasks: HTMLCanvasElement[] = [];
+		const activeAnimStates: AnimationRenderState[] = [];
+		for (let i = 0; i < generatedMasks.length; i++) {
+			const mask = generatedMasks[i];
+			if (mask && enabledMasks.has(mask.id) && transformedMasks[i]) {
+				activeMasks.push(transformedMasks[i]);
+				activeAnimStates.push(animationStates.get(mask.id) || { opacity: 1, color: '#FFD700' });
+			}
+		}
+		renderProjection(projectionCtx, appState.current, markerImages, activeMasks, activeAnimStates);
 
 		// 3. Draw projection onto wall using WebGL perspective transform
 		// Use "screen" blend mode - black has no effect, colors add light
@@ -350,19 +375,20 @@
 		}
 	}
 
-	// Start/stop animations based on mode
+	// Start/stop animations based on mode AND mask enabled state
 	$effect(() => {
 		const mode = appState.current.mode;
+		const isProjecting = mode === 'projecting';
 
-		if (mode === 'projecting') {
-			// Start animations when projecting
-			felizNavidadAnim?.start();
-			pomPomAnim?.start();
-		} else {
-			// Stop animations when not projecting
-			felizNavidadAnim?.stop();
-			pomPomAnim?.stop();
-		}
+		// Each animation runs only if projecting AND its mask is enabled
+		animations.forEach((anim, maskId) => {
+			const shouldRun = isProjecting && enabledMasks.has(maskId);
+			if (shouldRun) {
+				anim.start();
+			} else {
+				anim.stop();
+			}
+		});
 	});
 
 	// Re-render when state changes
@@ -497,6 +523,167 @@
 	}
 
 	/**
+	 * Toggle a mask's enabled state - persists to shared state
+	 */
+	async function toggleMask(maskId: string) {
+		// Update local state for immediate UI feedback
+		const newSet = new Set(enabledMasks);
+		if (newSet.has(maskId)) {
+			newSet.delete(maskId);
+		} else {
+			newSet.add(maskId);
+		}
+		enabledMasks = newSet;
+		renderSimulation();
+
+		// Persist to shared state so /projection sees the change
+		const masks = appState.current.projection.masks.map(m =>
+			m.id === maskId ? { ...m, enabled: newSet.has(maskId) } : m
+		);
+		await updateState({
+			projection: { ...appState.current.projection, masks }
+		});
+	}
+
+	/**
+	 * Regenerate a specific mask
+	 */
+	async function regenerateMask(maskId: string) {
+		regeneratingMask = maskId;
+
+		try {
+			if (maskId === 'wall-texture') {
+				await generateWallMask();
+			} else {
+				// Find the prompt for this mask
+				const promptConfig = SAM_PROMPTS.find(p => p.id === maskId);
+				if (!promptConfig) {
+					throw new Error(`Unknown mask ID: ${maskId}`);
+				}
+
+				// Generate single mask via SAM
+				const imageDataUrl = await loadImageAsDataUrl(SIMULATION_IMAGE_PATH);
+				const results = await generateMasks(SIMULATION_IMAGE_PATH, [promptConfig]);
+
+				if (results.length === 0) {
+					throw new Error(`No mask generated for "${promptConfig.prompt}"`);
+				}
+
+				// Load and transform the mask
+				const img = await loadMaskImage(results[0].maskUrl);
+				const transformed = transformMasksToProjector([img], SIMULATION_QUAD)[0];
+
+				// Update this specific mask in state
+				const maskData = {
+					id: maskId,
+					imageData: transformed.toDataURL('image/png'),
+					bounds: { x: 0, y: 0, width: transformed.width, height: transformed.height }
+				};
+
+				const existingMasks = appState.current.projection.masks.filter(m => m.id !== maskId);
+				await updateState({
+					projection: {
+						...appState.current.projection,
+						masks: [...existingMasks, maskData]
+					}
+				});
+
+				// Reload to update UI
+				await loadMasksFromState();
+			}
+		} catch (err) {
+			console.error(`Failed to regenerate mask ${maskId}:`, err);
+			generationError = err instanceof Error ? err.message : 'Regeneration failed';
+		} finally {
+			regeneratingMask = null;
+		}
+	}
+
+	/**
+	 * Delete a specific mask
+	 */
+	async function deleteMask(maskId: string) {
+		const existingMasks = appState.current.projection.masks.filter(m => m.id !== maskId);
+		await updateState({
+			projection: {
+				...appState.current.projection,
+				masks: existingMasks
+			}
+		});
+		await loadMasksFromState();
+	}
+
+	/**
+	 * Load an image URL as base64 data URL
+	 */
+	async function loadImageAsDataUrl(url: string): Promise<string> {
+		const response = await fetch(url);
+		const blob = await response.blob();
+		return new Promise((resolve) => {
+			const reader = new FileReader();
+			reader.onload = () => resolve(reader.result as string);
+			reader.readAsDataURL(blob);
+		});
+	}
+
+	/**
+	 * Generate wall texture mask using Gemini nano-banana-pro
+	 */
+	async function generateWallMask() {
+		isGeneratingWall = true;
+		wallMaskError = null;
+
+		try {
+			console.log('Generating wall texture mask...');
+
+			// Load the simulation image as base64
+			const response = await fetch(SIMULATION_IMAGE_PATH);
+			const blob = await response.blob();
+			const imageDataUrl = await new Promise<string>((resolve) => {
+				const reader = new FileReader();
+				reader.onload = () => resolve(reader.result as string);
+				reader.readAsDataURL(blob);
+			});
+
+			// Generate wall mask (calls API, extracts red as mask)
+			const { mask, editedImageUrl } = await generateWallTextureMask(imageDataUrl);
+			wallMaskUrl = editedImageUrl;
+
+			console.log('Wall mask generated, transforming to projector space...');
+
+			// Transform to projector space (same as other masks)
+			const transformedWallMask = transformMasksToProjector([mask as unknown as HTMLImageElement], SIMULATION_QUAD)[0];
+
+			// Add to existing masks
+			const wallMaskData = {
+				id: 'wall-texture',
+				imageData: transformedWallMask.toDataURL('image/png'),
+				bounds: { x: 0, y: 0, width: transformedWallMask.width, height: transformedWallMask.height },
+				enabled: true
+			};
+
+			// Update shared state with new mask added
+			const existingMasks = appState.current.projection.masks.filter(m => m.id !== 'wall-texture');
+			await updateState({
+				projection: {
+					...appState.current.projection,
+					masks: [...existingMasks, wallMaskData]
+				}
+			});
+
+			// Reload masks from state to update UI
+			await loadMasksFromState();
+
+			console.log('Wall texture mask added successfully');
+		} catch (err) {
+			wallMaskError = err instanceof Error ? err.message : 'Wall mask generation failed';
+			console.error('Wall mask generation error:', err);
+		} finally {
+			isGeneratingWall = false;
+		}
+	}
+
+	/**
 	 * Convert base64 image data to canvas element
 	 */
 	function base64ToCanvas(imageData: string, width: number, height: number): Promise<HTMLCanvasElement> {
@@ -535,9 +722,15 @@
 				score: 1 // Score not stored in state
 			}));
 
+			// Sync local enabledMasks with shared state
+			enabledMasks = new Set(
+				masks.filter(m => m.enabled !== false).map(m => m.id)
+			);
+
 			renderSimulation();
 		} else {
 			transformedMasks = [];
+			generatedMasks = [];
 		}
 	}
 
@@ -576,7 +769,8 @@
 			const masksForState = transformedMasks.map((canvas, i) => ({
 				id: results[i].id,
 				imageData: canvas.toDataURL('image/png'),
-				bounds: { x: 0, y: 0, width: canvas.width, height: canvas.height }
+				bounds: { x: 0, y: 0, width: canvas.width, height: canvas.height },
+				enabled: true
 			}));
 			await updateState({
 				projection: {
@@ -739,6 +933,13 @@
 		>
 			{isGenerating ? 'Generating...' : 'Generate Masks'}
 		</button>
+		<button
+			onclick={generateWallMask}
+			disabled={isGeneratingWall}
+			class="bg-green-600 hover:bg-green-700 disabled:bg-gray-600"
+		>
+			{isGeneratingWall ? 'Generating Wall...' : 'Generate Wall Mask'}
+		</button>
 	</div>
 
 	<!-- Detection Results -->
@@ -751,19 +952,79 @@
 		<p class="mb-4 text-red-400 text-sm">Generation Error: {generationError}</p>
 	{/if}
 
-	{#if generatedMasks.length > 0}
+	{#if wallMaskError}
+		<p class="mb-4 text-red-400 text-sm">Wall Mask Error: {wallMaskError}</p>
+	{/if}
+
+	{#if generatedMasks.length > 0 || isGeneratingWall}
 		<div class="mb-4 text-sm">
-			<p class="text-purple-400">Generated {generatedMasks.length} mask(s):</p>
-			<div class="flex gap-4 mt-2 flex-wrap">
+			<p class="text-purple-400 mb-2">Masks ({generatedMasks.length}{isGeneratingWall && !generatedMasks.find(m => m.id === 'wall-texture') ? '+1' : ''}):</p>
+			<div class="flex gap-4 flex-wrap">
+				{#if isGeneratingWall && !generatedMasks.find(m => m.id === 'wall-texture')}
+					<div class="bg-gray-800 p-3 rounded border border-yellow-500">
+						<div class="flex items-center justify-between mb-2">
+							<span class="text-gray-300 text-xs font-medium">wall-texture</span>
+							<span class="text-xs text-yellow-400">Generating...</span>
+						</div>
+						<div class="h-20 w-32 border border-gray-600 mb-2 flex items-center justify-center bg-gray-700">
+							<div class="text-center">
+								<div class="animate-spin w-6 h-6 border-2 border-yellow-500 border-t-transparent rounded-full mx-auto mb-1"></div>
+								<span class="text-xs text-gray-400">~30s</span>
+							</div>
+						</div>
+						<div class="flex gap-1">
+							<button disabled class="text-xs px-2 py-1 bg-gray-600 rounded">Regen</button>
+							<button disabled class="text-xs px-2 py-1 bg-gray-600 rounded">Delete</button>
+						</div>
+					</div>
+				{/if}
 				{#each generatedMasks as mask, i}
-					<div class="bg-gray-800 p-2 rounded">
-						<p class="text-gray-300 text-xs mb-1">"{mask.prompt}" {mask.score < 1 ? `(${(mask.score * 100).toFixed(1)}%)` : ''}</p>
-						<img
-							src={mask.maskUrl}
-							alt="Mask {i}"
-							class="h-24 w-auto border border-gray-600"
-							style="background: repeating-conic-gradient(#333 0% 25%, #444 0% 50%) 50% / 10px 10px;"
-						/>
+					<div class="bg-gray-800 p-3 rounded border {enabledMasks.has(mask.id) ? 'border-green-500' : 'border-gray-600'}">
+						<div class="flex items-center justify-between mb-2">
+							<span class="text-gray-300 text-xs font-medium">{mask.id}</span>
+							<label class="flex items-center gap-1 cursor-pointer">
+								<input
+									type="checkbox"
+									checked={enabledMasks.has(mask.id)}
+									onchange={() => toggleMask(mask.id)}
+									class="accent-green-500"
+								/>
+								<span class="text-xs text-gray-400">On</span>
+							</label>
+						</div>
+						{#if (mask.id === 'wall-texture' && isGeneratingWall) || regeneratingMask === mask.id}
+							<div class="h-20 w-32 border border-gray-600 mb-2 flex items-center justify-center bg-gray-700">
+								<div class="text-center">
+									<div class="animate-spin w-6 h-6 border-2 border-yellow-500 border-t-transparent rounded-full mx-auto mb-1"></div>
+									<span class="text-xs text-gray-400">Processing...</span>
+								</div>
+							</div>
+						{:else}
+							<img
+								src={mask.maskUrl}
+								alt="Mask {i}"
+								class="h-20 w-auto border border-gray-600 mb-2"
+								style="background: repeating-conic-gradient(#333 0% 25%, #444 0% 50%) 50% / 10px 10px;"
+							/>
+						{/if}
+						<div class="flex gap-1">
+							<button
+								onclick={() => regenerateMask(mask.id)}
+								disabled={regeneratingMask === mask.id}
+								class="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded"
+							>
+								{regeneratingMask === mask.id ? '...' : 'Regen'}
+							</button>
+							<button
+								onclick={() => deleteMask(mask.id)}
+								class="text-xs px-2 py-1 bg-red-600 hover:bg-red-700 rounded"
+							>
+								Delete
+							</button>
+						</div>
+						{#if mask.score < 1}
+							<p class="text-gray-500 text-xs mt-1">{(mask.score * 100).toFixed(0)}%</p>
+						{/if}
 					</div>
 				{/each}
 			</div>

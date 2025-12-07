@@ -14,3 +14,8 @@ export {
 	TRANSITION_DURATION_MS,
 	type PomPomState
 } from './pom-pom';
+export {
+	createWallTextureAnimation,
+	CYCLE_DURATION_MS as WALL_TEXTURE_CYCLE_DURATION_MS,
+	type WallTextureState
+} from './wall-texture';
