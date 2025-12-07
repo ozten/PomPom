@@ -196,6 +196,7 @@ export function transformMaskToProjector(
 	`;
 
 	// Fragment shader - applies homography to sample from mask
+	// SAM masks are RGB (white=mask, black=background), so we convert to alpha
 	const fragmentShaderSource = `
 		precision highp float;
 		uniform sampler2D u_texture;
@@ -213,7 +214,17 @@ export function transformMaskToProjector(
 				return;
 			}
 
-			gl_FragColor = texture2D(u_texture, uv);
+			vec4 maskColor = texture2D(u_texture, uv);
+			// SAM returns masked regions with original pixels + alpha channel
+			// Convert to binary B&W mask: if pixel has any alpha, make it fully white
+			// This gives us a clean signal to drive animations
+			float alpha = maskColor.a;
+			// Threshold: any alpha > 0.1 becomes fully opaque white
+			if (alpha > 0.1) {
+				gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+			} else {
+				gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
+			}
 		}
 	`;
 

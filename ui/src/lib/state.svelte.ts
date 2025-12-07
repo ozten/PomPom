@@ -4,7 +4,7 @@ let _state = $state<AppState>(structuredClone(DEFAULT_STATE));
 let polling = $state(false);
 let intervalId: ReturnType<typeof setInterval> | null = null;
 
-async function fetchState(): Promise<void> {
+export async function fetchState(): Promise<void> {
 	try {
 		const res = await fetch('/api/state');
 		if (res.ok) {

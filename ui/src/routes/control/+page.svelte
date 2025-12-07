@@ -11,11 +11,11 @@
 		PROJECTOR_WIDTH,
 		PROJECTOR_HEIGHT,
 		renderProjection,
-		loadMarkerImages,
-		loadSamMaskImages
+		loadMarkerImages
 	} from '$lib/projection-renderer';
-	import { SIMULATION_QUAD } from '$lib/projection-config';
+	import { SIMULATION_QUAD, SAM_PROMPTS, SIMULATION_IMAGE_PATH } from '$lib/projection-config';
 	import { transformMasksToProjector } from '$lib/mask-transform';
+	import { generateMasks, loadMaskImage, type GeneratedMask } from '$lib/sam';
 	import { drawPerspective } from '$lib/perspective-canvas';
 	import {
 		createFelizNavidadAnimation,
@@ -71,8 +71,13 @@
 	let isSaving = $state(false);
 	let saveMessage = $state<string | null>(null);
 
+	// Mask generation state
+	let isGenerating = $state(false);
+	let generationError = $state<string | null>(null);
+	let generatedMasks = $state<GeneratedMask[]>([]);
+
 	// Simulation configuration
-	const WALL_IMAGE_SRC = '/fixtures/IMG_0819.jpeg';
+	const WALL_IMAGE_SRC = '/fixtures/webcam_capture.png';
 
 	onMount(async () => {
 		startPolling(500);
@@ -285,9 +290,8 @@
 		// Load marker images (using shared loader)
 		markerImages = await loadMarkerImages();
 
-		// Load SAM mask images and transform them to projector space
-		const rawMasks = await loadSamMaskImages();
-		transformedMasks = transformMasksToProjector(rawMasks, SIMULATION_QUAD);
+		// Load existing masks from shared state if available
+		await loadMasksFromState();
 	}
 
 	function loadImage(src: string): Promise<HTMLImageElement> {
@@ -491,6 +495,117 @@
 			mode: 'idle'
 		});
 	}
+
+	/**
+	 * Convert base64 image data to canvas element
+	 */
+	function base64ToCanvas(imageData: string, width: number, height: number): Promise<HTMLCanvasElement> {
+		return new Promise((resolve) => {
+			const img = new Image();
+			img.onload = () => {
+				const canvas = document.createElement('canvas');
+				canvas.width = width;
+				canvas.height = height;
+				const ctx = canvas.getContext('2d')!;
+				ctx.drawImage(img, 0, 0);
+				resolve(canvas);
+			};
+			img.src = imageData;
+		});
+	}
+
+	/**
+	 * Load existing masks from shared state
+	 */
+	async function loadMasksFromState() {
+		const masks = appState.current.projection.masks;
+		if (masks.length > 0) {
+			console.log('Loading', masks.length, 'masks from shared state');
+
+			// Convert base64 to canvas
+			transformedMasks = await Promise.all(
+				masks.map(m => base64ToCanvas(m.imageData, m.bounds.width, m.bounds.height))
+			);
+
+			// Populate generatedMasks for UI display
+			generatedMasks = masks.map(m => ({
+				id: m.id,
+				prompt: m.id, // Use id as prompt since we don't store original prompt
+				maskUrl: m.imageData,
+				score: 1 // Score not stored in state
+			}));
+
+			renderSimulation();
+		} else {
+			transformedMasks = [];
+		}
+	}
+
+	/**
+	 * Generate masks from SAM API using configured prompts
+	 */
+	async function generateMasksFromSam() {
+		isGenerating = true;
+		generationError = null;
+
+		try {
+			console.log('Generating masks for prompts:', SAM_PROMPTS);
+
+			// Call SAM for each prompt
+			const results = await generateMasks(SIMULATION_IMAGE_PATH, SAM_PROMPTS);
+
+			if (results.length === 0) {
+				generationError = 'No masks generated. Check prompts and image.';
+				return;
+			}
+
+			console.log('Generated masks:', results);
+
+			// Load mask images and transform to projector space
+			const maskImages: HTMLImageElement[] = [];
+			for (const mask of results) {
+				const img = await loadMaskImage(mask.maskUrl);
+				maskImages.push(img);
+			}
+
+			// Transform masks to projector space
+			transformedMasks = transformMasksToProjector(maskImages, SIMULATION_QUAD);
+			console.log('Transformed', transformedMasks.length, 'masks');
+
+			// Convert transformed masks to base64 and save to shared state
+			const masksForState = transformedMasks.map((canvas, i) => ({
+				id: results[i].id,
+				imageData: canvas.toDataURL('image/png'),
+				bounds: { x: 0, y: 0, width: canvas.width, height: canvas.height }
+			}));
+			await updateState({
+				projection: {
+					...appState.current.projection,
+					masks: masksForState
+				}
+			});
+			console.log('Saved', masksForState.length, 'masks to shared state');
+
+			// Update generatedMasks to show transformed B&W masks in debug UI
+			generatedMasks = results.map((r, i) => ({
+				id: r.id,
+				prompt: r.prompt,
+				maskUrl: masksForState[i].imageData, // Use B&W transformed mask
+				score: r.score
+			}));
+
+			// Re-render simulation with new masks
+			renderSimulation();
+
+			// Auto-start projection mode to run animations
+			await startProjecting();
+		} catch (err) {
+			generationError = err instanceof Error ? err.message : 'Mask generation failed';
+			console.error('Mask generation error:', err);
+		} finally {
+			isGenerating = false;
+		}
+	}
 </script>
 
 <svelte:head>
@@ -616,11 +731,43 @@
 		>
 			Stop Projection
 		</button>
+		<span class="mx-2">|</span>
+		<button
+			onclick={generateMasksFromSam}
+			disabled={isGenerating}
+			class="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600"
+		>
+			{isGenerating ? 'Generating...' : 'Generate Masks'}
+		</button>
 	</div>
 
 	<!-- Detection Results -->
 	{#if detectionError}
 		<p class="mb-4 text-red-400 text-sm">Error: {detectionError}</p>
+	{/if}
+
+	<!-- Mask Generation Results -->
+	{#if generationError}
+		<p class="mb-4 text-red-400 text-sm">Generation Error: {generationError}</p>
+	{/if}
+
+	{#if generatedMasks.length > 0}
+		<div class="mb-4 text-sm">
+			<p class="text-purple-400">Generated {generatedMasks.length} mask(s):</p>
+			<div class="flex gap-4 mt-2 flex-wrap">
+				{#each generatedMasks as mask, i}
+					<div class="bg-gray-800 p-2 rounded">
+						<p class="text-gray-300 text-xs mb-1">"{mask.prompt}" {mask.score < 1 ? `(${(mask.score * 100).toFixed(1)}%)` : ''}</p>
+						<img
+							src={mask.maskUrl}
+							alt="Mask {i}"
+							class="h-24 w-auto border border-gray-600"
+							style="background: repeating-conic-gradient(#333 0% 25%, #444 0% 50%) 50% / 10px 10px;"
+						/>
+					</div>
+				{/each}
+			</div>
+		</div>
 	{/if}
 
 	{#if detectedMarkers.length > 0}

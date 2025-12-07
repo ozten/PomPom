@@ -5,11 +5,8 @@
 		PROJECTOR_WIDTH,
 		PROJECTOR_HEIGHT,
 		renderProjection,
-		loadMarkerImages,
-		loadSamMaskImages
+		loadMarkerImages
 	} from '$lib/projection-renderer';
-	import { SIMULATION_QUAD } from '$lib/projection-config';
-	import { transformMasksToProjector } from '$lib/mask-transform';
 	import {
 		createFelizNavidadAnimation,
 		createPomPomAnimation,
@@ -37,10 +34,8 @@
 		ctx = canvas.getContext('2d');
 		markerImages = await loadMarkerImages();
 
-		// Load SAM masks and transform to projector space
-		// TODO: Use calibrated homography when available instead of SIMULATION_QUAD
-		const rawMasks = await loadSamMaskImages();
-		transformedMasks = transformMasksToProjector(rawMasks, SIMULATION_QUAD);
+		// Start with no masks - will load from shared state
+		transformedMasks = [];
 
 		// Create animations with update callbacks
 		felizNavidadAnim = createFelizNavidadAnimation((state) => {
@@ -54,6 +49,46 @@
 		});
 
 		render();
+	});
+
+	/**
+	 * Convert base64 image data to canvas element
+	 */
+	function base64ToCanvas(imageData: string, width: number, height: number): Promise<HTMLCanvasElement> {
+		return new Promise((resolve) => {
+			const img = new Image();
+			img.onload = () => {
+				const canvas = document.createElement('canvas');
+				canvas.width = width;
+				canvas.height = height;
+				const ctx = canvas.getContext('2d')!;
+				ctx.drawImage(img, 0, 0);
+				resolve(canvas);
+			};
+			img.src = imageData;
+		});
+	}
+
+	// Load masks from shared state when they change
+	let lastMaskIds = '';
+	$effect(() => {
+		const masks = appState.current.projection.masks;
+		const currentIds = masks.map(m => m.id).join(',');
+
+		// Only reload if masks changed
+		if (currentIds !== lastMaskIds && masks.length > 0) {
+			lastMaskIds = currentIds;
+			Promise.all(
+				masks.map(m => base64ToCanvas(m.imageData, m.bounds.width, m.bounds.height))
+			).then(canvases => {
+				transformedMasks = canvases;
+				render();
+			});
+		} else if (masks.length === 0 && transformedMasks.length > 0) {
+			// Clear masks if state was cleared
+			transformedMasks = [];
+			render();
+		}
 	});
 
 	onDestroy(() => {

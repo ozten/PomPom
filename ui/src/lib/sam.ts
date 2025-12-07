@@ -71,3 +71,72 @@ export async function urlToDataUrl(url: string): Promise<string> {
 		reader.readAsDataURL(blob);
 	});
 }
+
+/**
+ * Result of generating masks for multiple prompts
+ */
+export interface GeneratedMask {
+	id: string;
+	prompt: string;
+	maskUrl: string;
+	score: number;
+}
+
+/**
+ * Generate masks for multiple prompts using SAM
+ *
+ * @param imageUrl - URL of the image to segment (e.g., '/fixtures/webcam_capture.png')
+ * @param prompts - Array of {id, prompt} objects
+ * @returns Array of generated masks with their URLs and scores
+ */
+export async function generateMasks(
+	imageUrl: string,
+	prompts: { id: string; prompt: string }[]
+): Promise<GeneratedMask[]> {
+	// Load the image as base64
+	const imageDataUrl = await urlToDataUrl(imageUrl);
+
+	const results: GeneratedMask[] = [];
+
+	// Call SAM for each prompt
+	for (const { id, prompt } of prompts) {
+		try {
+			console.log(`SAM: Segmenting "${prompt}"...`);
+			const result = await segmentImage(imageDataUrl, prompt);
+			console.log(`SAM: Result for "${prompt}":`, result);
+
+			// Use the highest-scoring mask
+			if (result.masks && result.masks.length > 0) {
+				const bestIndex = result.scores
+					? result.scores.indexOf(Math.max(...result.scores))
+					: 0;
+
+				results.push({
+					id,
+					prompt,
+					maskUrl: result.masks[bestIndex].url,
+					score: result.scores?.[bestIndex] ?? 1
+				});
+			} else {
+				console.warn(`SAM: No masks returned for "${prompt}"`);
+			}
+		} catch (error) {
+			console.error(`SAM: Failed to segment "${prompt}":`, error);
+		}
+	}
+
+	return results;
+}
+
+/**
+ * Load a mask image from URL into an HTMLImageElement
+ */
+export async function loadMaskImage(url: string): Promise<HTMLImageElement> {
+	return new Promise((resolve, reject) => {
+		const img = new Image();
+		img.crossOrigin = 'anonymous';
+		img.onload = () => resolve(img);
+		img.onerror = reject;
+		img.src = url;
+	});
+}

@@ -3,6 +3,7 @@
 
 	// Available fixture images
 	const FIXTURES = [
+		{ name: 'Webcam Capture (Simulation)', path: '/fixtures/webcam_capture.png' },
 		{ name: 'Wall (IMG_0819)', path: '/fixtures/IMG_0819.jpeg' },
 		{ name: 'Projector', path: '/fixtures/projector.png' },
 		{ name: 'Webcam', path: '/fixtures/webcam.jpg' },

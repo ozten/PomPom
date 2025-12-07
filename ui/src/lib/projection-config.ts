@@ -21,24 +21,36 @@ export interface Quad {
 export const PROJECTOR_WIDTH = 1920;
 export const PROJECTOR_HEIGHT = 1080;
 
-// Camera/wall image dimensions (portrait iPhone photo)
+// SAM prompts for mask generation
+export const SAM_PROMPTS = [
+	{ id: 'feliz-navidad', prompt: 'Feliz Navidad!' },
+	{ id: 'pom-pom', prompt: 'garland' }
+];
+
+// Simulation image path (relative to static/)
+export const SIMULATION_IMAGE_PATH = '/fixtures/webcam_capture.png';
+
+// Camera/wall image dimensions (webcam capture)
 export const CAMERA_IMAGE_SIZE = {
-	width: 996,
-	height: 1328
+	width: 640,
+	height: 480
 };
 
 /**
  * SIMULATION_QUAD defines where the projection appears in the camera/wall image.
  * This is a trapezoid due to the camera viewing angle.
  *
- * These coordinates were measured from the fixture image (IMG_0819.jpeg).
+ * These coordinates were measured from the fixture image (webcam_capture.png).
  * The quad maps to the full projector output (0,0)-(1920,1080).
+ *
+ * NOTE: These are estimated values for the new webcam capture.
+ * Run real calibration to get accurate values for your setup.
  */
 export const SIMULATION_QUAD: Quad = {
-	topLeft: { x: 240, y: 165 },
-	topRight: { x: 900, y: 290 },
-	bottomLeft: { x: 240, y: 700 },
-	bottomRight: { x: 910, y: 690 }
+	topLeft: { x: 30, y: 80 },
+	topRight: { x: 610, y: 80 },
+	bottomLeft: { x: 30, y: 450 },
+	bottomRight: { x: 610, y: 450 }
 };
 
 /**

@@ -22,7 +22,7 @@ export const DEFAULT_STATE: AppState = {
 		status: 'none'
 	},
 	projection: {
-		color: '#1a1a2e',
+		color: '#000000', // Pure black - projector emits no light
 		masks: []
 	}
 };
