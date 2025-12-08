@@ -16,19 +16,25 @@
 	import { SIMULATION_QUAD, SAM_PROMPTS, SIMULATION_IMAGE_PATH } from '$lib/projection-config';
 	import { transformMasksToProjector } from '$lib/mask-transform';
 	import { generateMasks, loadMaskImage, type GeneratedMask } from '$lib/sam';
-	import { generateWallTextureMask } from '$lib/wall-mask';
+	import { generateWallTextureMask, extractRedAsMask } from '$lib/wall-mask';
 	import { detectIslands, type IslandDetectionResult } from '$lib/island-detection';
+	import { detectPomPoms, type PomPomInfo, type PomPomDetectionResult } from '$lib/pompom-detection';
 	import { drawPerspective } from '$lib/perspective-canvas';
 	import {
 		createFelizNavidadAnimation,
 		createPomPomAnimation,
 		createWallTextureAnimation,
 		createIslandPhotosAnimation,
+		createSpotlightAnimation,
 		type Animation,
 		type AnimationRenderState,
 		type IslandPhoto,
-		type IslandPhotosAnimation
+		type IslandPhotosAnimation,
+		type SpotlightInfo,
+		type SparkParticle,
+		type SpotlightAnimation
 	} from '$lib/animations';
+	import { PROJECTOR_WIDTH as PROJ_WIDTH, PROJECTOR_HEIGHT as PROJ_HEIGHT } from '$lib/projection-config';
 
 	// Canvas element reference
 	let canvas: HTMLCanvasElement;
@@ -49,7 +55,7 @@
 	// Current animation render states (keyed by mask ID)
 	let animationStates: Map<string, AnimationRenderState> = new Map([
 		['feliz-navidad', { opacity: 1, color: '#FFD700' }],
-		['pom-pom', { opacity: 1, color: '#FFD700' }],
+		['pom-pom', { opacity: 0, color: '#FFD700' }], // Hidden - spotlights handle visualization
 		['wall-texture', { opacity: 1, color: '#FF0000' }]
 	]);
 
@@ -87,6 +93,16 @@
 	let wallMaskError = $state<string | null>(null);
 	let wallMaskUrl = $state<string | null>(null);
 
+	// Wall mask history state
+	interface WallMaskHistoryEntry {
+		id: string;
+		timestamp: string;
+		hasOutput: boolean;
+	}
+	let wallMaskHistory = $state<WallMaskHistoryEntry[]>([]);
+	let isLoadingHistory = $state(false);
+	let isLoadingHistoryMask = $state(false);
+
 	// Island detection state
 	let isDetectingIslands = $state(false);
 	let islandDetectionError = $state<string | null>(null);
@@ -96,6 +112,16 @@
 	let islandPhotosAnim: IslandPhotosAnimation | null = null;
 	let islandPhotos = $state<IslandPhoto[]>([]);
 	let islandsMaskCanvas = $state<HTMLCanvasElement | null>(null);
+
+	// Pom-pom detection state
+	let isDetectingPomPoms = $state(false);
+	let pomPomDetectionError = $state<string | null>(null);
+	let pomPomDetectionResult = $state<PomPomDetectionResult | null>(null);
+
+	// Spotlight animation state
+	let spotlightAnim: SpotlightAnimation | null = null;
+	let spotlights = $state<SpotlightInfo[]>([]);
+	let particles = $state<SparkParticle[]>([]);
 
 	// Per-mask enabled state and regeneration tracking
 	let enabledMasks = $state<Set<string>>(new Set(['feliz-navidad', 'pom-pom', 'wall-texture']));
@@ -154,8 +180,58 @@
 			renderSimulation();
 		});
 
+		// Create spotlight animation
+		spotlightAnim = createSpotlightAnimation((spots) => {
+			spotlights = spots;
+			// Get particles from the animation
+			if (spotlightAnim) {
+				particles = spotlightAnim.getParticles();
+			}
+			renderSimulation();
+		}, PROJ_WIDTH, PROJ_HEIGHT);
+
+		// Set up color sampler that reads from the wall image
+		spotlightAnim.setColorSampler((x, y) => {
+			if (!wallImage) return null;
+			// The spotlight coordinates are in projector space
+			// We need to map them back to the wall image space via the SIMULATION_QUAD
+			// For now, sample directly from the wall image at the corresponding position
+			const tempCanvas = document.createElement('canvas');
+			tempCanvas.width = wallImage.width;
+			tempCanvas.height = wallImage.height;
+			const tempCtx = tempCanvas.getContext('2d');
+			if (!tempCtx) return null;
+			tempCtx.drawImage(wallImage, 0, 0);
+
+			// Map projector coords to image coords using SIMULATION_QUAD
+			// Simple approach: use bilinear interpolation within the quad
+			const q = SIMULATION_QUAD;
+			const u = x / PROJ_WIDTH;
+			const v = y / PROJ_HEIGHT;
+
+			// Bilinear interpolation of quad corners
+			const topX = q.topLeft.x + (q.topRight.x - q.topLeft.x) * u;
+			const topY = q.topLeft.y + (q.topRight.y - q.topLeft.y) * u;
+			const bottomX = q.bottomLeft.x + (q.bottomRight.x - q.bottomLeft.x) * u;
+			const bottomY = q.bottomLeft.y + (q.bottomRight.y - q.bottomLeft.y) * u;
+			const imgX = Math.round(topX + (bottomX - topX) * v);
+			const imgY = Math.round(topY + (bottomY - topY) * v);
+
+			// Get pixel color
+			try {
+				const imageData = tempCtx.getImageData(imgX, imgY, 1, 1);
+				const [r, g, b] = imageData.data;
+				return `rgb(${r}, ${g}, ${b})`;
+			} catch {
+				return null;
+			}
+		});
+
 		// Initial render
 		renderSimulation();
+
+		// Fetch wall mask history
+		fetchWallMaskHistory();
 	});
 
 	onDestroy(() => {
@@ -163,6 +239,7 @@
 		// Stop all animations
 		animations.forEach(anim => anim.stop());
 		islandPhotosAnim?.stop();
+		spotlightAnim?.stop();
 		// Stop webcam
 		stopWebcam();
 	});
@@ -392,7 +469,9 @@
 			activeMasks,
 			activeAnimStates,
 			islandPhotos,
-			islandsMaskCanvas || undefined
+			islandsMaskCanvas || undefined,
+			spotlights,
+			particles
 		);
 
 		// 3. Draw projection onto wall using WebGL perspective transform
@@ -722,11 +801,94 @@
 			await loadMasksFromState();
 
 			console.log('Wall texture mask added successfully');
+
+			// Refresh history after generating new mask
+			await fetchWallMaskHistory();
 		} catch (err) {
 			wallMaskError = err instanceof Error ? err.message : 'Wall mask generation failed';
 			console.error('Wall mask generation error:', err);
 		} finally {
 			isGeneratingWall = false;
+		}
+	}
+
+	/**
+	 * Fetch wall mask generation history (last 10)
+	 */
+	async function fetchWallMaskHistory() {
+		isLoadingHistory = true;
+		try {
+			const response = await fetch('/api/wall-mask-history');
+			const data = await response.json();
+			wallMaskHistory = data.entries || [];
+		} catch (err) {
+			console.error('Failed to fetch wall mask history:', err);
+			wallMaskHistory = [];
+		} finally {
+			isLoadingHistory = false;
+		}
+	}
+
+	/**
+	 * Load a historical wall mask by ID
+	 */
+	async function loadHistoricalWallMask(id: string) {
+		isLoadingHistoryMask = true;
+		wallMaskError = null;
+
+		try {
+			console.log('Loading historical wall mask:', id);
+
+			// Fetch the edited image from the API (this is the fal.ai output with red painted areas)
+			const response = await fetch('/api/wall-mask-history', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ id })
+			});
+
+			if (!response.ok) {
+				throw new Error('Failed to load mask');
+			}
+
+			const data = await response.json();
+			const editedImageUrl = data.imageUrl;
+
+			console.log('Historical image loaded, extracting red mask...');
+
+			// Extract red pixels as B&W mask (same as generateWallTextureMask does)
+			const maskCanvas = await extractRedAsMask(editedImageUrl);
+
+			console.log('Red mask extracted, transforming to projector space...');
+
+			// Transform to projector space (same as other masks)
+			const transformedWallMask = transformMasksToProjector([maskCanvas as unknown as HTMLImageElement], SIMULATION_QUAD)[0];
+
+			// Add to existing masks
+			const wallMaskData = {
+				id: 'wall-texture',
+				imageData: transformedWallMask.toDataURL('image/png'),
+				bounds: { x: 0, y: 0, width: transformedWallMask.width, height: transformedWallMask.height },
+				enabled: true
+			};
+
+			// Update shared state with new mask added
+			const existingMasks = appState.current.projection.masks.filter(m => m.id !== 'wall-texture');
+			await updateState({
+				projection: {
+					...appState.current.projection,
+					masks: [...existingMasks, wallMaskData]
+				}
+			});
+
+			// Reload masks from state to update UI
+			await loadMasksFromState();
+
+			console.log('Historical wall texture mask loaded successfully');
+		} catch (err) {
+			wallMaskError = err instanceof Error ? err.message : 'Failed to load historical mask';
+			console.error('Historical mask load error:', err);
+		} finally {
+			isLoadingHistoryMask = false;
 		}
 	}
 
@@ -766,20 +928,31 @@
 				waterPixels: result.stats.waterPixels
 			});
 
-			// Update the wall-texture mask with sub-masks
+			// Get island components for photo animation
+			const islandComponents = result.stats.components.filter(c => c.isIsland);
+
+			// Update the wall-texture mask with sub-masks and disable it
+			// (photos will be shown instead of the mask)
 			const updatedMasks = appState.current.projection.masks.map(m => {
 				if (m.id === 'wall-texture') {
 					return {
 						...m,
+						enabled: false, // Hide the mask, photos will show instead
 						subMasks: {
 							islands: result.islands.toDataURL('image/png'),
 							land: result.land.toDataURL('image/png'),
-							water: result.water.toDataURL('image/png')
+							water: result.water.toDataURL('image/png'),
+							islandComponents // Store for projection page
 						}
 					};
 				}
 				return m;
 			});
+
+			// Update local enabled state (create new Set for reactivity)
+			const newEnabledMasks = new Set(enabledMasks);
+			newEnabledMasks.delete('wall-texture');
+			enabledMasks = newEnabledMasks;
 
 			await updateState({
 				projection: { ...appState.current.projection, masks: updatedMasks }
@@ -801,6 +974,113 @@
 			console.error('Island detection error:', err);
 		} finally {
 			isDetectingIslands = false;
+		}
+	}
+
+	/**
+	 * Detect pom-poms in the pom-pom mask
+	 * Finds circular blobs for spotlight animation
+	 */
+	async function detectPomPomsFromMask() {
+		isDetectingPomPoms = true;
+		pomPomDetectionError = null;
+		pomPomDetectionResult = null;
+
+		try {
+			// Find the pom-pom mask in state
+			const pomPomMask = appState.current.projection.masks.find(m => m.id === 'pom-pom');
+			if (!pomPomMask) {
+				throw new Error('No pom-pom mask found. Generate one first.');
+			}
+
+			console.log('Detecting pom-poms in mask...');
+
+			// Convert base64 to canvas for processing
+			const maskCanvas = await base64ToCanvas(
+				pomPomMask.imageData,
+				pomPomMask.bounds.width,
+				pomPomMask.bounds.height
+			);
+
+			// Run pom-pom detection with relaxed parameters to catch all pom-poms
+			const result = detectPomPoms(maskCanvas, {
+				minRadius: 3,
+				maxRadius: 200,
+				minCircularity: 0.3
+			});
+			pomPomDetectionResult = result;
+
+			console.log('Pom-pom detection complete:', {
+				count: result.pomPoms.length,
+				positions: result.sortedByX.map(p => ({ x: Math.round(p.center.x), y: Math.round(p.center.y), r: Math.round(p.radius) }))
+			});
+
+			// Sample colors for each pom-pom from the wall image
+			const pomPomPositions = result.sortedByX.map(p => {
+				let color: string | undefined;
+				if (wallImage) {
+					// Sample color at pom-pom center using same logic as color sampler
+					const tempCanvas = document.createElement('canvas');
+					tempCanvas.width = wallImage.width;
+					tempCanvas.height = wallImage.height;
+					const tempCtx = tempCanvas.getContext('2d');
+					if (tempCtx) {
+						tempCtx.drawImage(wallImage, 0, 0);
+						const q = SIMULATION_QUAD;
+						const u = p.center.x / PROJ_WIDTH;
+						const v = p.center.y / PROJ_HEIGHT;
+						const topX = q.topLeft.x + (q.topRight.x - q.topLeft.x) * u;
+						const topY = q.topLeft.y + (q.topRight.y - q.topLeft.y) * u;
+						const bottomX = q.bottomLeft.x + (q.bottomRight.x - q.bottomLeft.x) * u;
+						const bottomY = q.bottomLeft.y + (q.bottomRight.y - q.bottomLeft.y) * u;
+						const imgX = Math.round(topX + (bottomX - topX) * v);
+						const imgY = Math.round(topY + (bottomY - topY) * v);
+						try {
+							const imageData = tempCtx.getImageData(imgX, imgY, 1, 1);
+							const [r, g, b] = imageData.data;
+							color = `rgb(${r}, ${g}, ${b})`;
+						} catch {
+							// Ignore sampling errors
+						}
+					}
+				}
+				return {
+					index: p.index,
+					x: p.center.x,
+					y: p.center.y,
+					radius: p.radius,
+					color
+				};
+			});
+			await updateState({
+				projection: {
+					...appState.current.projection,
+					pomPoms: pomPomPositions
+				}
+			});
+
+			// Pass pom-pom positions (with colors) to spotlight animation and start it
+			if (spotlightAnim && pomPomPositions.length > 0) {
+				// Convert back to PomPomInfo format expected by spotlight animation
+				const pomPomInfos = pomPomPositions.map(p => ({
+					index: p.index,
+					center: { x: p.x, y: p.y },
+					radius: p.radius,
+					pixelCount: 0,
+					boundingBox: { minX: 0, maxX: 0, minY: 0, maxY: 0 },
+					circularity: 1,
+					color: p.color
+				}));
+				spotlightAnim.setPomPoms(pomPomInfos);
+				spotlightAnim.start();
+			}
+
+			console.log('Spotlight animation started with', pomPomPositions.length, 'pom-poms');
+		} catch (err) {
+			pomPomDetectionError = err instanceof Error ? err.message : 'Pom-pom detection failed';
+			console.error('Pom-pom detection error:', err);
+		} finally {
+			isDetectingPomPoms = false;
 		}
 	}
 
@@ -1056,17 +1336,42 @@
 		</button>
 		<button
 			onclick={generateWallMask}
-			disabled={isGeneratingWall}
+			disabled={isGeneratingWall || isLoadingHistoryMask}
 			class="bg-green-600 hover:bg-green-700 disabled:bg-gray-600"
 		>
 			{isGeneratingWall ? 'Generating Wall...' : 'Generate Wall Mask'}
 		</button>
+		<select
+			onchange={(e) => {
+				const select = e.target as HTMLSelectElement;
+				if (select.value) {
+					loadHistoricalWallMask(select.value);
+					select.value = '';
+				}
+			}}
+			disabled={isLoadingHistoryMask || isGeneratingWall || wallMaskHistory.length === 0}
+			class="bg-green-800 hover:bg-green-900 disabled:bg-gray-600 text-white px-3 py-2 rounded text-sm"
+		>
+			<option value="">{isLoadingHistoryMask ? 'Loading...' : isLoadingHistory ? 'Loading history...' : `History (${wallMaskHistory.length})`}</option>
+			{#each wallMaskHistory as entry}
+				<option value={entry.id}>
+					{new Date(entry.timestamp).toLocaleString()}
+				</option>
+			{/each}
+		</select>
 		<button
 			onclick={detectIslandsFromWallMask}
 			disabled={isDetectingIslands}
 			class="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600"
 		>
 			{isDetectingIslands ? 'Detecting...' : 'Detect Islands'}
+		</button>
+		<button
+			onclick={detectPomPomsFromMask}
+			disabled={isDetectingPomPoms}
+			class="bg-pink-600 hover:bg-pink-700 disabled:bg-gray-600"
+		>
+			{isDetectingPomPoms ? 'Detecting...' : 'Detect Pom Poms'}
 		</button>
 	</div>
 
@@ -1086,6 +1391,10 @@
 
 	{#if islandDetectionError}
 		<p class="mb-4 text-red-400 text-sm">Island Detection Error: {islandDetectionError}</p>
+	{/if}
+
+	{#if pomPomDetectionError}
+		<p class="mb-4 text-red-400 text-sm">Pom-Pom Detection Error: {pomPomDetectionError}</p>
 	{/if}
 
 	{#if islandDetectionResult}
@@ -1129,6 +1438,27 @@
 					></canvas>
 				</div>
 			</div>
+		</div>
+	{/if}
+
+	{#if pomPomDetectionResult}
+		<div class="mb-4 p-3 bg-gray-800 rounded text-sm">
+			<p class="text-pink-400 mb-2">Pom-Pom Detection Results:</p>
+			<p class="text-gray-300">
+				Found {pomPomDetectionResult.pomPoms.length} pom-poms
+			</p>
+			<div class="mt-2 flex flex-wrap gap-2">
+				{#each pomPomDetectionResult.sortedByX as pompom, i}
+					<div class="bg-gray-700 px-2 py-1 rounded text-xs">
+						#{i + 1}: ({Math.round(pompom.center.x)}, {Math.round(pompom.center.y)}) r={Math.round(pompom.radius)}
+					</div>
+				{/each}
+			</div>
+			{#if spotlights.length > 0}
+				<p class="text-yellow-400 mt-2">
+					Active spotlights: {spotlights.length}
+				</p>
+			{/if}
 		</div>
 	{/if}
 

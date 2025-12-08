@@ -27,3 +27,15 @@ export {
 	type IslandPhoto,
 	type IslandPhotosAnimation
 } from './island-photos';
+export {
+	createSpotlightAnimation,
+	MAX_SPOTLIGHT_DIAMETER,
+	PULSE_DURATION_MS,
+	PAN_DURATION_MS,
+	NEW_SPOTLIGHT_INTERVAL_MS,
+	SPARK_EMIT_RATE,
+	SPARK_LIFETIME_DISTANCE,
+	type SpotlightInfo,
+	type SparkParticle,
+	type SpotlightAnimation
+} from './spotlight';

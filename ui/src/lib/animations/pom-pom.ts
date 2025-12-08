@@ -1,8 +1,9 @@
 /**
  * Pom Pom Animation
  *
- * Changes the garland/pom pom color to a random color every 5 seconds.
- * Includes smooth color transition.
+ * NOTE: The colored pom-pom animation is disabled in favor of the spotlight animation.
+ * This animation now outputs opacity: 0 so the mask doesn't render,
+ * but the mask is still used for pom-pom detection to position spotlights.
  */
 
 import type { Animation, AnimationRenderState } from './types';
@@ -115,9 +116,9 @@ export function createPomPomAnimation(onUpdate: (state: AnimationRenderState) =>
 		// Calculate interpolated color
 		const displayColor = lerpColor(state.currentColor, state.targetColor, state.transitionProgress);
 
-		// Notify listener
+		// Notify listener - opacity 0 to hide mask (spotlights handle visualization)
 		onUpdate({
-			opacity: state.opacity,
+			opacity: 0,
 			color: displayColor
 		});
 
@@ -151,7 +152,7 @@ export function createPomPomAnimation(onUpdate: (state: AnimationRenderState) =>
 				state.transitionProgress
 			);
 			return {
-				opacity: state.opacity,
+				opacity: 0, // Hidden - spotlights handle visualization
 				color: displayColor
 			};
 		}

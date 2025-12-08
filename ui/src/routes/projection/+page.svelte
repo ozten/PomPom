@@ -11,9 +11,17 @@
 		createFelizNavidadAnimation,
 		createPomPomAnimation,
 		createWallTextureAnimation,
+		createSpotlightAnimation,
+		createIslandPhotosAnimation,
 		type Animation,
-		type AnimationRenderState
+		type AnimationRenderState,
+		type SpotlightInfo,
+		type SparkParticle,
+		type SpotlightAnimation,
+		type IslandPhoto,
+		type IslandPhotosAnimation
 	} from '$lib/animations';
+	import { PROJECTOR_WIDTH as PROJ_WIDTH, PROJECTOR_HEIGHT as PROJ_HEIGHT } from '$lib/projection-config';
 
 	let canvas: HTMLCanvasElement;
 	let ctx: CanvasRenderingContext2D | null = null;
@@ -26,9 +34,19 @@
 	// Current animation render states (keyed by mask ID)
 	let animationStates: Map<string, AnimationRenderState> = new Map([
 		['feliz-navidad', { opacity: 1, color: '#FFD700' }],
-		['pom-pom', { opacity: 1, color: '#FFD700' }],
+		['pom-pom', { opacity: 0, color: '#FFD700' }], // Hidden - spotlights handle visualization
 		['wall-texture', { opacity: 1, color: '#FF0000' }]
 	]);
+
+	// Spotlight animation (not using $state to avoid effect cycles)
+	let spotlightAnim: SpotlightAnimation | null = null;
+	let spotlights: SpotlightInfo[] = [];
+	let particles: SparkParticle[] = [];
+
+	// Island photos animation (not using $state to avoid effect cycles)
+	let islandPhotosAnim: IslandPhotosAnimation | null = null;
+	let islandPhotos: IslandPhoto[] = [];
+	let islandsMaskCanvas: HTMLCanvasElement | null = null;
 
 	onMount(async () => {
 		startPolling(500);
@@ -53,6 +71,22 @@
 			animationStates.set('wall-texture', state);
 			render();
 		}));
+
+		// Create spotlight animation
+		spotlightAnim = createSpotlightAnimation((spots) => {
+			spotlights = spots;
+			// Get particles from the animation
+			if (spotlightAnim) {
+				particles = spotlightAnim.getParticles();
+			}
+			render();
+		}, PROJ_WIDTH, PROJ_HEIGHT);
+
+		// Create island photos animation
+		islandPhotosAnim = createIslandPhotosAnimation((photos) => {
+			islandPhotos = photos;
+			render();
+		});
 
 		render();
 	});
@@ -102,6 +136,82 @@
 		stopPolling();
 		// Stop all animations
 		animations.forEach(anim => anim.stop());
+		spotlightAnim?.stop();
+		islandPhotosAnim?.stop();
+	});
+
+	// Watch for sub-masks (islands) in shared state to set up island photos animation
+	let lastSubMasksState = '';
+	$effect(() => {
+		const masks = appState.current.projection.masks;
+		const wallMask = masks.find(m => m.id === 'wall-texture');
+
+		if (wallMask?.subMasks && islandPhotosAnim) {
+			const islandComponents = wallMask.subMasks.islandComponents || [];
+			const currentState = `${islandComponents.length}:${wallMask.subMasks.islands.slice(0, 50)}`;
+
+			if (currentState !== lastSubMasksState) {
+				lastSubMasksState = currentState;
+
+				// Capture values for the async callback
+				const componentsToUse = islandComponents;
+				const imageSrc = wallMask.subMasks.islands;
+
+				// Load islands mask canvas from base64
+				const img = new Image();
+				img.onload = () => {
+					const canvas = document.createElement('canvas');
+					canvas.width = img.width;
+					canvas.height = img.height;
+					const ctx = canvas.getContext('2d')!;
+					ctx.drawImage(img, 0, 0);
+					islandsMaskCanvas = canvas;
+
+					// Set island components for the photos animation and start it
+					if (componentsToUse.length > 0) {
+						islandPhotosAnim!.setIslands(componentsToUse);
+						islandPhotosAnim!.start();
+					}
+				};
+				img.src = imageSrc;
+			}
+		}
+	});
+
+	// Watch for pom-pom positions in shared state and mode changes
+	let lastPomPomState = '';
+	$effect(() => {
+		const pomPoms = appState.current.projection.pomPoms;
+		const mode = appState.current.mode;
+		const currentState = `${mode}:${pomPoms?.length || 0}`;
+
+		if (pomPoms && pomPoms.length > 0 && spotlightAnim) {
+			// Convert to PomPomInfo format expected by spotlight animation
+			const pomPomInfos = pomPoms.map(p => ({
+				index: p.index,
+				center: { x: p.x, y: p.y },
+				radius: p.radius,
+				pixelCount: 0,
+				boundingBox: { minX: 0, maxX: 0, minY: 0, maxY: 0 },
+				circularity: 1,
+				color: p.color // Pass through pre-sampled color
+			}));
+
+			// Update pom-poms if they changed
+			if (currentState !== lastPomPomState) {
+				lastPomPomState = currentState;
+				spotlightAnim.setPomPoms(pomPomInfos);
+			}
+
+			// Start/stop based on mode
+			if (mode === 'projecting') {
+				spotlightAnim.start();
+			} else {
+				spotlightAnim.stop();
+			}
+		} else if (spotlightAnim) {
+			spotlightAnim.stop();
+		}
 	});
 
 	function render() {
@@ -117,7 +227,7 @@
 				activeAnimStates.push(animationStates.get(mask.id) || { opacity: 1, color: '#FFD700' });
 			}
 		}
-		renderProjection(ctx, appState.current, markerImages, activeMasks, activeAnimStates);
+		renderProjection(ctx, appState.current, markerImages, activeMasks, activeAnimStates, islandPhotos, islandsMaskCanvas || undefined, spotlights, particles);
 	}
 
 	// Start/stop animations based on mode AND mask enabled state
@@ -142,12 +252,6 @@
 		});
 	});
 
-	// Re-render when state changes (for non-animated states)
-	$effect(() => {
-		const _ = appState.current.calibration.status;
-		const __ = appState.current.projection;
-		render();
-	});
 </script>
 
 <svelte:head>

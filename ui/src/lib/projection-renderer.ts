@@ -6,6 +6,7 @@
 import type { AppState } from './types';
 import type { AnimationRenderState } from './animations/types';
 import type { IslandPhoto } from './animations/island-photos';
+import type { SpotlightInfo, SparkParticle } from './animations/spotlight';
 import { PROJECTOR_WIDTH, PROJECTOR_HEIGHT } from './projection-config';
 
 // Re-export for backwards compatibility
@@ -56,6 +57,8 @@ export const MARKER_POSITIONS = getMarkerPositions();
  * @param animationStates - Per-mask animation states [feliz-navidad, garland]
  * @param islandPhotos - Photos to render in island positions
  * @param islandsMask - The islands-only mask for clipping photos
+ * @param spotlights - Spotlight positions and sizes to render
+ * @param particles - Spark particles to render
  */
 export function renderProjection(
 	ctx: CanvasRenderingContext2D,
@@ -64,7 +67,9 @@ export function renderProjection(
 	transformedMasks: HTMLCanvasElement[] = [],
 	animationStates: AnimationRenderState[] = [],
 	islandPhotos: IslandPhoto[] = [],
-	islandsMask?: HTMLCanvasElement
+	islandsMask?: HTMLCanvasElement,
+	spotlights: SpotlightInfo[] = [],
+	particles: SparkParticle[] = []
 ): void {
 	const { mode, calibration, projection } = state;
 
@@ -106,6 +111,9 @@ export function renderProjection(
 			// Set global alpha for opacity
 			ctx.globalAlpha = animState.opacity;
 
+			// Use screen blend mode for additive light simulation
+			ctx.globalCompositeOperation = 'screen';
+
 			// Create temporary canvas for color tinting
 			const tempCanvas = document.createElement('canvas');
 			tempCanvas.width = PROJECTOR_WIDTH;
@@ -120,21 +128,48 @@ export function renderProjection(
 			tempCtx.fillStyle = animState.color;
 			tempCtx.fillRect(0, 0, PROJECTOR_WIDTH, PROJECTOR_HEIGHT);
 
-			// Draw the tinted mask to main canvas
+			// Draw the tinted mask to main canvas (using screen blend)
 			ctx.drawImage(tempCanvas, 0, 0);
 
 			// Restore context state
 			ctx.restore();
 		}
 
-		// Render island photos if available
+		// Render island photos if available (using screen blend for additive light)
 		if (islandPhotos.length > 0 && islandsMask) {
+			ctx.save();
+			ctx.globalCompositeOperation = 'screen';
 			renderIslandPhotos(ctx, islandPhotos, islandsMask);
+			ctx.restore();
+		}
+
+		// Render spotlights if available (using screen blend for additive light)
+		if (spotlights.length > 0) {
+			ctx.save();
+			ctx.globalCompositeOperation = 'screen';
+			renderSpotlights(ctx, spotlights);
+			ctx.restore();
+		}
+
+		// Render spark particles if available (using screen blend for additive light)
+		if (particles.length > 0) {
+			ctx.save();
+			ctx.globalCompositeOperation = 'screen';
+			renderParticles(ctx, particles);
+			ctx.restore();
 		}
 	} else {
 		// Idle mode: solid color
 		ctx.fillStyle = projection.color;
 		ctx.fillRect(0, 0, PROJECTOR_WIDTH, PROJECTOR_HEIGHT);
+
+		// Still render island photos in idle mode for preview
+		if (islandPhotos.length > 0 && islandsMask) {
+			ctx.save();
+			ctx.globalCompositeOperation = 'screen';
+			renderIslandPhotos(ctx, islandPhotos, islandsMask);
+			ctx.restore();
+		}
 	}
 }
 
@@ -190,6 +225,80 @@ function renderIslandPhotos(
 
 	// Draw the masked photos to the main canvas
 	ctx.drawImage(tempCanvas, 0, 0);
+}
+
+/**
+ * Render spotlights as glowing white circles
+ */
+function renderSpotlights(ctx: CanvasRenderingContext2D, spotlights: SpotlightInfo[]): void {
+	for (const spotlight of spotlights) {
+		if (spotlight.diameter <= 0 || spotlight.opacity <= 0) continue;
+
+		const radius = spotlight.diameter / 2;
+
+		ctx.save();
+		ctx.globalAlpha = spotlight.opacity;
+
+		// Create radial gradient for soft glow effect
+		const gradient = ctx.createRadialGradient(
+			spotlight.x,
+			spotlight.y,
+			0,
+			spotlight.x,
+			spotlight.y,
+			radius
+		);
+
+		// White core fading to transparent edge
+		gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+		gradient.addColorStop(0.3, 'rgba(255, 255, 255, 0.9)');
+		gradient.addColorStop(0.6, 'rgba(255, 255, 255, 0.5)');
+		gradient.addColorStop(0.8, 'rgba(255, 255, 255, 0.2)');
+		gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+		// Draw the spotlight
+		ctx.fillStyle = gradient;
+		ctx.beginPath();
+		ctx.arc(spotlight.x, spotlight.y, radius, 0, Math.PI * 2);
+		ctx.fill();
+
+		ctx.restore();
+	}
+}
+
+/**
+ * Render spark particles as small glowing circles
+ */
+function renderParticles(ctx: CanvasRenderingContext2D, particles: SparkParticle[]): void {
+	for (const particle of particles) {
+		if (particle.opacity <= 0 || particle.size <= 0) continue;
+
+		ctx.save();
+		ctx.globalAlpha = particle.opacity;
+
+		// Create radial gradient for soft glow effect
+		const gradient = ctx.createRadialGradient(
+			particle.x,
+			particle.y,
+			0,
+			particle.x,
+			particle.y,
+			particle.size
+		);
+
+		// Use particle color with gradient fade
+		gradient.addColorStop(0, particle.color);
+		gradient.addColorStop(0.4, particle.color);
+		gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+		// Draw the particle
+		ctx.fillStyle = gradient;
+		ctx.beginPath();
+		ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+		ctx.fill();
+
+		ctx.restore();
+	}
 }
 
 /**
