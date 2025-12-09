@@ -175,25 +175,28 @@ export function renderProjection(
 
 /**
  * Render photos into island positions, clipped to the islands mask
+ * Each photo has its own opacity for fade in/out effects
  */
 function renderIslandPhotos(
 	ctx: CanvasRenderingContext2D,
 	photos: IslandPhoto[],
 	islandsMask: HTMLCanvasElement
 ): void {
-	// Create a temporary canvas for compositing
-	const tempCanvas = document.createElement('canvas');
-	tempCanvas.width = PROJECTOR_WIDTH;
-	tempCanvas.height = PROJECTOR_HEIGHT;
-	const tempCtx = tempCanvas.getContext('2d')!;
-
-	// Draw all photos to temp canvas
+	// Render each photo separately to support per-photo opacity
 	for (const photo of photos) {
 		if (!photo.image) continue;
+		const opacity = photo.opacity ?? 1;
+		if (opacity <= 0) continue;
 
 		const { minX, minY, maxX, maxY } = photo.boundingBox;
 		const width = maxX - minX + 1;
 		const height = maxY - minY + 1;
+
+		// Create a temporary canvas for this photo
+		const tempCanvas = document.createElement('canvas');
+		tempCanvas.width = PROJECTOR_WIDTH;
+		tempCanvas.height = PROJECTOR_HEIGHT;
+		const tempCtx = tempCanvas.getContext('2d')!;
 
 		// Draw photo scaled to fill the bounding box
 		// Use object-fit: cover behavior - scale to fill, crop excess
@@ -216,15 +219,18 @@ function renderIslandPhotos(
 		}
 
 		tempCtx.drawImage(photo.image, srcX, srcY, srcW, srcH, minX, minY, width, height);
+
+		// Apply the islands mask using destination-in
+		// This keeps only the parts of the photo that overlap with islands
+		tempCtx.globalCompositeOperation = 'destination-in';
+		tempCtx.drawImage(islandsMask, 0, 0);
+
+		// Draw the masked photo to the main canvas with opacity
+		ctx.save();
+		ctx.globalAlpha = opacity;
+		ctx.drawImage(tempCanvas, 0, 0);
+		ctx.restore();
 	}
-
-	// Apply the islands mask using destination-in
-	// This keeps only the parts of the photos that overlap with islands
-	tempCtx.globalCompositeOperation = 'destination-in';
-	tempCtx.drawImage(islandsMask, 0, 0);
-
-	// Draw the masked photos to the main canvas
-	ctx.drawImage(tempCanvas, 0, 0);
 }
 
 /**

@@ -23,7 +23,10 @@ export {
 } from './wall-texture';
 export {
 	createIslandPhotosAnimation,
-	SWAP_INTERVAL_MS,
+	DISPLAY_DURATION_MS,
+	FADE_DURATION_MS,
+	MAX_ACTIVE_ISLANDS,
+	AVG_SPAWN_INTERVAL_MS,
 	type IslandPhoto,
 	type IslandPhotosAnimation
 } from './island-photos';

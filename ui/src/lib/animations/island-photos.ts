@@ -1,13 +1,17 @@
 /**
  * Island Photos Animation
  *
- * Displays random photos in random islands, swapping one every 5 seconds.
+ * Displays photos in up to 2 randomly selected islands at a time.
+ * Every 5 seconds, re-rolls which islands are active and assigns new random photos.
  * Photos are scaled to fill each island's bounding box.
  */
 
 import type { ComponentInfo } from '../island-detection';
 
-export const SWAP_INTERVAL_MS = 5000; // 5 seconds between photo swaps
+export const DISPLAY_DURATION_MS = 10000; // Total time a photo displays (including fade)
+export const FADE_DURATION_MS = 1500; // Duration of fade in/out
+export const MAX_ACTIVE_ISLANDS = 2; // Maximum number of islands showing photos at once
+export const AVG_SPAWN_INTERVAL_MS = 6000; // Average time between photo spawns
 
 // Available photos in /static/content/
 const PHOTO_PATHS = [
@@ -30,13 +34,15 @@ export interface IslandPhoto {
 	photoPath: string;
 	image: HTMLImageElement | null; // null while loading
 	boundingBox: { minX: number; maxX: number; minY: number; maxY: number };
+	opacity: number; // 0-1 for fade in/out
+	startTime: number; // When this photo started displaying
 }
 
 export interface IslandPhotosState {
 	islands: ComponentInfo[]; // Island info from detection
 	photos: Map<number, IslandPhoto>; // Map of islandIndex -> photo info
 	running: boolean;
-	intervalId: number | null;
+	animationFrameId: number | null;
 	imagesLoaded: Map<string, HTMLImageElement>; // Cache of loaded images
 }
 
@@ -59,7 +65,7 @@ export function createIslandPhotosAnimation(
 		islands: [],
 		photos: new Map(),
 		running: false,
-		intervalId: null,
+		animationFrameId: null,
 		imagesLoaded: new Map()
 	};
 
@@ -83,15 +89,6 @@ export function createIslandPhotosAnimation(
 	}
 
 	/**
-	 * Pick a random island that is classified as an island (not land)
-	 */
-	function pickRandomIsland(): ComponentInfo | null {
-		const islands = state.islands.filter((c) => c.isIsland);
-		if (islands.length === 0) return null;
-		return islands[Math.floor(Math.random() * islands.length)];
-	}
-
-	/**
 	 * Pick a random photo path
 	 */
 	function pickRandomPhoto(): string {
@@ -99,30 +96,106 @@ export function createIslandPhotosAnimation(
 	}
 
 	/**
-	 * Assign a random photo to a random island
+	 * Calculate opacity based on elapsed time with ease in/out
 	 */
-	async function swapRandomIslandPhoto() {
-		if (!state.running || state.islands.length === 0) return;
+	function calculateOpacity(elapsed: number): number {
+		if (elapsed < FADE_DURATION_MS) {
+			// Fade in: ease-out curve (starts fast, slows down)
+			const t = elapsed / FADE_DURATION_MS;
+			return 1 - (1 - t) * (1 - t);
+		} else if (elapsed > DISPLAY_DURATION_MS - FADE_DURATION_MS) {
+			// Fade out: ease-in curve (starts slow, speeds up)
+			const remaining = DISPLAY_DURATION_MS - elapsed;
+			const t = remaining / FADE_DURATION_MS;
+			return t * t;
+		}
+		return 1; // Full opacity in the middle
+	}
 
-		const island = pickRandomIsland();
-		if (!island) return;
+	/**
+	 * Add a new photo to a random available island
+	 */
+	async function addNewPhoto(now: number) {
+		const validIslands = state.islands.filter((c) => c.isIsland);
+		if (validIslands.length === 0) return;
 
-		const photoPath = pickRandomPhoto();
+		// Find islands that don't currently have a photo
+		const usedIndices = new Set(state.photos.keys());
+		const availableIslands = validIslands.filter((island) => {
+			const idx = state.islands.indexOf(island);
+			return !usedIndices.has(idx);
+		});
+
+		if (availableIslands.length === 0) return;
+
+		// Pick a random available island
+		const island = availableIslands[Math.floor(Math.random() * availableIslands.length)];
 		const islandIndex = state.islands.indexOf(island);
+		const photoPath = pickRandomPhoto();
 
-		// Start loading the image
+		// Load image
 		const image = await loadImage(photoPath);
 
-		// Update the photo assignment
 		state.photos.set(islandIndex, {
 			islandIndex,
 			photoPath,
 			image,
-			boundingBox: island.boundingBox
+			boundingBox: island.boundingBox,
+			opacity: 0,
+			startTime: now
 		});
+	}
 
-		// Notify listener
-		onUpdate(Array.from(state.photos.values()));
+	let lastTickTime = 0;
+
+	/**
+	 * Animation loop - updates opacity and probabilistically spawns new photos
+	 */
+	function tick(now: number) {
+		if (!state.running) return;
+
+		const deltaMs = lastTickTime > 0 ? now - lastTickTime : 16;
+		lastTickTime = now;
+
+		let needsUpdate = false;
+
+		// Update opacity for each photo and remove expired ones
+		const expiredKeys: number[] = [];
+		for (const [key, photo] of state.photos) {
+			const elapsed = now - photo.startTime;
+			const newOpacity = calculateOpacity(elapsed);
+
+			if (elapsed >= DISPLAY_DURATION_MS) {
+				expiredKeys.push(key);
+				needsUpdate = true;
+			} else if (Math.abs(photo.opacity - newOpacity) > 0.01) {
+				photo.opacity = newOpacity;
+				needsUpdate = true;
+			}
+		}
+
+		// Remove expired photos
+		for (const key of expiredKeys) {
+			state.photos.delete(key);
+		}
+
+		// Probabilistically spawn a new photo if below limit
+		// Probability per frame = deltaMs / AVG_SPAWN_INTERVAL_MS
+		if (state.photos.size < MAX_ACTIVE_ISLANDS) {
+			const spawnProbability = deltaMs / AVG_SPAWN_INTERVAL_MS;
+			if (Math.random() < spawnProbability) {
+				addNewPhoto(now);
+				needsUpdate = true;
+			}
+		}
+
+		// Notify if anything changed
+		if (needsUpdate) {
+			onUpdate(Array.from(state.photos.values()));
+		}
+
+		// Schedule next frame
+		state.animationFrameId = requestAnimationFrame(tick);
 	}
 
 	return {
@@ -131,21 +204,17 @@ export function createIslandPhotosAnimation(
 		start() {
 			if (state.running) return;
 			state.running = true;
+			lastTickTime = 0; // Reset so first frame doesn't have huge delta
 
-			// Do an initial swap immediately
-			swapRandomIslandPhoto();
-
-			// Then swap every SWAP_INTERVAL_MS
-			state.intervalId = window.setInterval(() => {
-				swapRandomIslandPhoto();
-			}, SWAP_INTERVAL_MS);
+			// Start animation loop
+			state.animationFrameId = requestAnimationFrame(tick);
 		},
 
 		stop() {
 			state.running = false;
-			if (state.intervalId !== null) {
-				clearInterval(state.intervalId);
-				state.intervalId = null;
+			if (state.animationFrameId !== null) {
+				cancelAnimationFrame(state.animationFrameId);
+				state.animationFrameId = null;
 			}
 		},
 
