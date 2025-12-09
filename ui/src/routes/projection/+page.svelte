@@ -183,7 +183,8 @@
 	$effect(() => {
 		const pomPoms = appState.current.projection.pomPoms;
 		const mode = appState.current.mode;
-		const currentState = `${mode}:${pomPoms?.length || 0}`;
+		const animationsEnabled = appState.current.projection.animationsEnabled !== false;
+		const currentState = `${mode}:${animationsEnabled}:${pomPoms?.length || 0}`;
 
 		if (pomPoms && pomPoms.length > 0 && spotlightAnim) {
 			// Convert to PomPomInfo format expected by spotlight animation
@@ -203,8 +204,8 @@
 				spotlightAnim.setPomPoms(pomPomInfos);
 			}
 
-			// Start/stop based on mode
-			if (mode === 'projecting') {
+			// Start/stop based on mode AND animations enabled
+			if (mode === 'projecting' && animationsEnabled) {
 				spotlightAnim.start();
 			} else {
 				spotlightAnim.stop();
@@ -230,10 +231,11 @@
 		renderProjection(ctx, appState.current, markerImages, activeMasks, activeAnimStates, islandPhotos, islandsMaskCanvas || undefined, spotlights, particles);
 	}
 
-	// Start/stop animations based on mode AND mask enabled state
+	// Start/stop animations based on mode, mask enabled state, AND master toggle
 	$effect(() => {
 		const mode = appState.current.mode;
 		const masks = appState.current.projection.masks;
+		const animationsEnabled = appState.current.projection.animationsEnabled !== false; // Default true
 		const isProjecting = mode === 'projecting';
 
 		// Build set of enabled mask IDs
@@ -241,15 +243,35 @@
 			masks.filter(m => m.enabled !== false).map(m => m.id)
 		);
 
-		// Each animation runs only if projecting AND its mask is enabled
+		// Each animation runs only if projecting AND its mask is enabled AND animations are enabled
 		animations.forEach((anim, maskId) => {
-			const shouldRun = isProjecting && enabledMaskIds.has(maskId);
+			const shouldRun = isProjecting && animationsEnabled && enabledMaskIds.has(maskId);
 			if (shouldRun) {
 				anim.start();
 			} else {
 				anim.stop();
 			}
 		});
+
+		// Also control spotlight and island photos animations
+		if (spotlightAnim) {
+			if (isProjecting && animationsEnabled) {
+				// Let the pom-pom effect handle starting (it checks for pom-poms)
+			} else {
+				spotlightAnim.stop();
+			}
+		}
+		if (islandPhotosAnim) {
+			if (isProjecting && animationsEnabled) {
+				// Start the animation if we have islands loaded
+				// The setIslands call happens in the subMasks effect
+				if (islandsMaskCanvas) {
+					islandPhotosAnim.start();
+				}
+			} else {
+				islandPhotosAnim.stop();
+			}
+		}
 	});
 
 </script>

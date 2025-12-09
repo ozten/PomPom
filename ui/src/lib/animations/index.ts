@@ -23,6 +23,8 @@ export {
 } from './wall-texture';
 export {
 	createIslandPhotosAnimation,
+	setPhotoPaths,
+	getPhotoPaths,
 	DISPLAY_DURATION_MS,
 	FADE_DURATION_MS,
 	MAX_ACTIVE_ISLANDS,

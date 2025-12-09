@@ -85,16 +85,18 @@ export interface GeneratedMask {
 /**
  * Generate masks for multiple prompts using SAM
  *
- * @param imageUrl - URL of the image to segment (e.g., '/fixtures/webcam_capture.png')
+ * @param imageUrlOrDataUrl - URL of the image to segment (e.g., '/fixtures/webcam_capture.png') or a base64 data URL
  * @param prompts - Array of {id, prompt} objects
  * @returns Array of generated masks with their URLs and scores
  */
 export async function generateMasks(
-	imageUrl: string,
+	imageUrlOrDataUrl: string,
 	prompts: { id: string; prompt: string }[]
 ): Promise<GeneratedMask[]> {
-	// Load the image as base64
-	const imageDataUrl = await urlToDataUrl(imageUrl);
+	// Check if already a data URL, otherwise load from URL
+	const imageDataUrl = imageUrlOrDataUrl.startsWith('data:')
+		? imageUrlOrDataUrl
+		: await urlToDataUrl(imageUrlOrDataUrl);
 
 	const results: GeneratedMask[] = [];
 

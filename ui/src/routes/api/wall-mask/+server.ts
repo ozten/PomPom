@@ -78,7 +78,7 @@ async function saveDebugFiles(
 export const POST: RequestHandler = async ({ request }) => {
 	console.log('[wall-mask] POST request received');
 
-	const { image } = await request.json();
+	const { image, width, height } = await request.json();
 
 	if (!image) {
 		console.log('[wall-mask] Error: image is required');
@@ -88,6 +88,22 @@ export const POST: RequestHandler = async ({ request }) => {
 	const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 	console.log(`[wall-mask] Processing request ${timestamp}`);
 	console.log(`[wall-mask] Input image size: ${image.length} chars`);
+	console.log(`[wall-mask] Input dimensions: ${width}x${height}`);
+
+	// Determine aspect ratio from input dimensions
+	// Default to 16:9 for live mode (1920x1080), 4:3 for dev mode (640x480)
+	let aspectRatio = '16:9';
+	if (width && height) {
+		const ratio = width / height;
+		if (Math.abs(ratio - 4/3) < 0.1) {
+			aspectRatio = '4:3';
+		} else if (Math.abs(ratio - 16/9) < 0.1) {
+			aspectRatio = '16:9';
+		} else if (Math.abs(ratio - 1) < 0.1) {
+			aspectRatio = '1:1';
+		}
+		console.log(`[wall-mask] Detected aspect ratio: ${aspectRatio} (from ${ratio.toFixed(2)})`);
+	}
 
 	try {
 		// Load reference images
@@ -115,7 +131,7 @@ CRITICAL: You must preserve the EXACT scale, position, perspective, and geometry
 		const startTime = Date.now();
 
 		// Call nano-banana-pro/edit with all three images
-		// Source image is 640x480 = 4:3 aspect ratio
+		// Use aspect ratio detected from input image
 		const result = await fal.subscribe('fal-ai/nano-banana-pro/edit', {
 			input: {
 				prompt: prompt,
@@ -123,7 +139,7 @@ CRITICAL: You must preserve the EXACT scale, position, perspective, and geometry
 				num_images: 1,
 				output_format: 'png',
 				resolution: '1K',
-				aspect_ratio: '4:3' // Match source image aspect ratio (640x480)
+				aspect_ratio: aspectRatio
 			}
 		});
 

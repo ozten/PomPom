@@ -179,3 +179,42 @@ export function buildPointCorrespondences(
 
 	return { cameraPoints, projectorPoints };
 }
+
+/**
+ * Extract the camera quad (projection boundary) from detected markers.
+ * Uses the outer corners of the 4 calibration markers to define where
+ * the projection appears in camera image space.
+ *
+ * Marker layout:
+ * - Marker 0: top-left (use its top-left corner)
+ * - Marker 1: top-right (use its top-right corner)
+ * - Marker 2: bottom-left (use its bottom-left corner)
+ * - Marker 3: bottom-right (use its bottom-right corner)
+ */
+export function extractCameraQuad(
+	detectedMarkers: DetectedMarker[]
+): { topLeft: Point; topRight: Point; bottomLeft: Point; bottomRight: Point } | null {
+	// Need all 4 markers
+	const markerMap = new Map<number, DetectedMarker>();
+	for (const marker of detectedMarkers) {
+		markerMap.set(marker.id, marker);
+	}
+
+	if (!markerMap.has(0) || !markerMap.has(1) || !markerMap.has(2) || !markerMap.has(3)) {
+		return null;
+	}
+
+	// Marker corners are in order: TL, TR, BR, BL (indices 0, 1, 2, 3)
+	// Extract the outer corners of each marker
+	const marker0 = markerMap.get(0)!; // top-left marker
+	const marker1 = markerMap.get(1)!; // top-right marker
+	const marker2 = markerMap.get(2)!; // bottom-left marker
+	const marker3 = markerMap.get(3)!; // bottom-right marker
+
+	return {
+		topLeft: marker0.corners[0],     // TL corner of top-left marker
+		topRight: marker1.corners[1],    // TR corner of top-right marker
+		bottomLeft: marker2.corners[3],  // BL corner of bottom-left marker
+		bottomRight: marker3.corners[2]  // BR corner of bottom-right marker
+	};
+}

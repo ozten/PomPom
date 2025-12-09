@@ -22,16 +22,25 @@ export interface WallMaskError {
  * Generate a wall texture image with red painted areas
  *
  * @param imageDataUrl - Base64 data URL of the target image
+ * @param width - Optional width of the source image (for aspect ratio detection)
+ * @param height - Optional height of the source image (for aspect ratio detection)
  * @returns Result with URL to the edited image
  */
-export async function generateWallMaskImage(imageDataUrl: string): Promise<WallMaskResult> {
+export async function generateWallMaskImage(
+	imageDataUrl: string,
+	width?: number,
+	height?: number
+): Promise<WallMaskResult> {
 	console.log('[wall-mask] Calling /api/wall-mask...');
 	console.log(`[wall-mask] Input image size: ${imageDataUrl.length} chars`);
+	if (width && height) {
+		console.log(`[wall-mask] Input dimensions: ${width}x${height}`);
+	}
 
 	const res = await fetch('/api/wall-mask', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ image: imageDataUrl })
+		body: JSON.stringify({ image: imageDataUrl, width, height })
 	});
 
 	const data = await res.json();
@@ -81,26 +90,38 @@ export async function cleanWallImage(imageDataUrl: string): Promise<CleanWallRes
  * Red pixels become white (opaque), non-red become transparent
  *
  * @param imageUrl - URL of the image with red-painted areas
+ * @param targetWidth - Optional target width to resize mask to (for alignment with source image)
+ * @param targetHeight - Optional target height to resize mask to (for alignment with source image)
  * @returns Canvas with B&W mask
  */
-export async function extractRedAsMask(imageUrl: string): Promise<HTMLCanvasElement> {
+export async function extractRedAsMask(
+	imageUrl: string,
+	targetWidth?: number,
+	targetHeight?: number
+): Promise<HTMLCanvasElement> {
 	console.log('[extract-mask] Loading image from URL...');
 
 	// Load the image
 	const img = await loadImage(imageUrl);
+
+	// Validate image was loaded successfully
+	if (!img || !img.width || !img.height) {
+		throw new Error(`Failed to load image from URL: ${imageUrl.substring(0, 100)}...`);
+	}
+
 	console.log(`[extract-mask] Loaded image: ${img.width}x${img.height}`);
 
-	// Create canvas
-	const canvas = document.createElement('canvas');
-	canvas.width = img.width;
-	canvas.height = img.height;
-	const ctx = canvas.getContext('2d')!;
+	// Create canvas at loaded image size for processing
+	const processCanvas = document.createElement('canvas');
+	processCanvas.width = img.width;
+	processCanvas.height = img.height;
+	const processCtx = processCanvas.getContext('2d')!;
 
 	// Draw image to canvas
-	ctx.drawImage(img, 0, 0);
+	processCtx.drawImage(img, 0, 0);
 
 	// Get pixel data
-	const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+	const imageData = processCtx.getImageData(0, 0, processCanvas.width, processCanvas.height);
 	const data = imageData.data;
 
 	// Process pixels: red becomes white, everything else becomes transparent
@@ -133,12 +154,25 @@ export async function extractRedAsMask(imageUrl: string): Promise<HTMLCanvasElem
 	}
 
 	// Put processed data back
-	ctx.putImageData(imageData, 0, 0);
+	processCtx.putImageData(imageData, 0, 0);
 
 	const percentage = ((redPixelCount / totalPixels) * 100).toFixed(1);
 	console.log(`[extract-mask] Found ${redPixelCount} red pixels (${percentage}% of image)`);
 
-	return canvas;
+	// If target dimensions specified and different from loaded image, resize
+	if (targetWidth && targetHeight && (targetWidth !== img.width || targetHeight !== img.height)) {
+		console.log(`[extract-mask] Resizing mask from ${img.width}x${img.height} to ${targetWidth}x${targetHeight}`);
+		const outputCanvas = document.createElement('canvas');
+		outputCanvas.width = targetWidth;
+		outputCanvas.height = targetHeight;
+		const outputCtx = outputCanvas.getContext('2d')!;
+		// Use nearest-neighbor for crisp mask edges
+		outputCtx.imageSmoothingEnabled = false;
+		outputCtx.drawImage(processCanvas, 0, 0, targetWidth, targetHeight);
+		return outputCanvas;
+	}
+
+	return processCanvas;
 }
 
 /**
@@ -161,15 +195,24 @@ function loadImage(url: string): Promise<HTMLImageElement> {
  * Step 2: Paint wall texture red and extract as mask
  *
  * @param imageDataUrl - Base64 data URL of the target image
+ * @param width - Optional width of the source image (for aspect ratio)
+ * @param height - Optional height of the source image (for aspect ratio)
  * @returns Canvas with B&W mask of wall texture, plus intermediate URLs
  */
-export async function generateWallTextureMask(imageDataUrl: string): Promise<{
+export async function generateWallTextureMask(
+	imageDataUrl: string,
+	width?: number,
+	height?: number
+): Promise<{
 	mask: HTMLCanvasElement;
 	editedImageUrl: string;
 	cleanImageUrl?: string;
 }> {
 	console.log('[wall-texture] Starting pipeline (Step 1 disabled)...');
 	console.log(`[wall-texture] Input image size: ${imageDataUrl.length} chars`);
+	if (width && height) {
+		console.log(`[wall-texture] Input dimensions: ${width}x${height}`);
+	}
 	const startTime = Date.now();
 
 	// Step 1: DISABLED - Skip decoration removal, use original image directly
@@ -181,7 +224,7 @@ export async function generateWallTextureMask(imageDataUrl: string): Promise<{
 	// Using original image directly instead of cleaned image
 	console.log('[wall-texture] Step 2: Calling wall-mask API (using original image)...');
 	const step2Start = Date.now();
-	const result = await generateWallMaskImage(imageDataUrl);
+	const result = await generateWallMaskImage(imageDataUrl, width, height);
 	console.log(`[wall-texture] Step 2 took ${Date.now() - step2Start}ms`);
 
 	if (!result.images || result.images.length === 0) {
@@ -192,9 +235,10 @@ export async function generateWallTextureMask(imageDataUrl: string): Promise<{
 	console.log(`[wall-texture] Step 2 complete - red-painted image: ${editedImageUrl}`);
 
 	// Step 3: Extract red pixels as B&W mask
+	// Resize mask back to source dimensions so homography transform aligns correctly
 	console.log('[wall-texture] Step 3: Extracting red pixels as mask...');
 	const step3Start = Date.now();
-	const mask = await extractRedAsMask(editedImageUrl);
+	const mask = await extractRedAsMask(editedImageUrl, width, height);
 	console.log(`[wall-texture] Step 3 took ${Date.now() - step3Start}ms`);
 	console.log(`[wall-texture] Final mask: ${mask.width}x${mask.height}`);
 

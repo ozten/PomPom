@@ -6,16 +6,28 @@ export interface PomPomPosition {
 	color?: string; // Sampled color from webcam (hex)
 }
 
+// Camera quad - defines where the projection appears in camera image space
+export interface CameraQuad {
+	topLeft: { x: number; y: number };
+	topRight: { x: number; y: number };
+	bottomLeft: { x: number; y: number };
+	bottomRight: { x: number; y: number };
+	imageWidth: number;  // Actual camera image width
+	imageHeight: number; // Actual camera image height
+}
+
 export interface AppState {
 	mode: 'idle' | 'calibrating' | 'projecting';
 	calibration: {
 		status: 'none' | 'showing-markers' | 'captured' | 'complete';
 		homography?: number[][];
+		cameraQuad?: CameraQuad; // The projection boundary in camera image space
 	};
 	projection: {
 		color: string;
 		masks: TransformedMask[];
 		pomPoms?: PomPomPosition[]; // Detected pom-pom positions for spotlight animation
+		animationsEnabled?: boolean; // Master toggle for all animations (default: true)
 	};
 }
 

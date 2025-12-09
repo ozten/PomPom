@@ -6,7 +6,12 @@
  */
 
 import type { Quad, Point } from './projection-config';
-import { PROJECTOR_WIDTH, PROJECTOR_HEIGHT, CAMERA_IMAGE_SIZE } from './projection-config';
+import { PROJECTOR_WIDTH, PROJECTOR_HEIGHT } from './projection-config';
+
+export interface ImageSize {
+	width: number;
+	height: number;
+}
 
 /**
  * Compute a 3x3 homography matrix that maps source quad to destination quad
@@ -132,11 +137,13 @@ function compileShader(
  *
  * @param maskImage - The SAM mask in camera/wall image coordinates
  * @param cameraQuad - The quad in camera space where projection appears
+ * @param imageSize - The dimensions of the source camera image
  * @returns A canvas with the transformed mask at projector resolution
  */
 export function transformMaskToProjector(
 	maskImage: HTMLImageElement | HTMLCanvasElement,
-	cameraQuad: Quad
+	cameraQuad: Quad,
+	imageSize: ImageSize
 ): HTMLCanvasElement {
 	// Create output canvas at projector resolution
 	const outputCanvas = document.createElement('canvas');
@@ -146,7 +153,7 @@ export function transformMaskToProjector(
 	const gl = outputCanvas.getContext('webgl', { premultipliedAlpha: false, preserveDrawingBuffer: true });
 	if (!gl) {
 		console.error('WebGL not supported, using fallback');
-		return fallbackTransform(maskImage, cameraQuad);
+		return fallbackTransform(maskImage, cameraQuad, imageSize);
 	}
 
 	// Projector rectangle (destination)
@@ -164,11 +171,11 @@ export function transformMaskToProjector(
 	// Normalize by camera image size to get UV coordinates (0-1)
 	// We need to scale the camera coordinates to UV space
 	const scaleMatrix = [
-		1 / CAMERA_IMAGE_SIZE.width,
+		1 / imageSize.width,
 		0,
 		0,
 		0,
-		1 / CAMERA_IMAGE_SIZE.height,
+		1 / imageSize.height,
 		0,
 		0,
 		0,
@@ -232,13 +239,13 @@ export function transformMaskToProjector(
 	const vertexShader = compileShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
 	const fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
 	if (!vertexShader || !fragmentShader) {
-		return fallbackTransform(maskImage, cameraQuad);
+		return fallbackTransform(maskImage, cameraQuad, imageSize);
 	}
 
 	// Create program
 	const program = gl.createProgram();
 	if (!program) {
-		return fallbackTransform(maskImage, cameraQuad);
+		return fallbackTransform(maskImage, cameraQuad, imageSize);
 	}
 	gl.attachShader(program, vertexShader);
 	gl.attachShader(program, fragmentShader);
@@ -246,7 +253,7 @@ export function transformMaskToProjector(
 
 	if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
 		console.error('Program link error:', gl.getProgramInfoLog(program));
-		return fallbackTransform(maskImage, cameraQuad);
+		return fallbackTransform(maskImage, cameraQuad, imageSize);
 	}
 
 	gl.useProgram(program);
@@ -319,7 +326,8 @@ function multiplyMatrices(a: number[], b: number[]): number[] {
  */
 function fallbackTransform(
 	maskImage: HTMLImageElement | HTMLCanvasElement,
-	cameraQuad: Quad
+	cameraQuad: Quad,
+	_imageSize: ImageSize
 ): HTMLCanvasElement {
 	const outputCanvas = document.createElement('canvas');
 	outputCanvas.width = PROJECTOR_WIDTH;
@@ -372,7 +380,8 @@ function fallbackTransform(
  */
 export function transformMasksToProjector(
 	maskImages: HTMLImageElement[],
-	cameraQuad: Quad
+	cameraQuad: Quad,
+	imageSize: ImageSize
 ): HTMLCanvasElement[] {
-	return maskImages.map((img) => transformMaskToProjector(img, cameraQuad));
+	return maskImages.map((img) => transformMaskToProjector(img, cameraQuad, imageSize));
 }

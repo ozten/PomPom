@@ -22,9 +22,18 @@ export const PROJECTOR_WIDTH = 1920;
 export const PROJECTOR_HEIGHT = 1080;
 
 // SAM prompts for mask generation
+// Past prompts that have been tried:
+//   pom-pom: 'garland' - didn't detect pom-poms well
+//   pom-pom: 'colorful pom poms' - (alternative)
+//   pom-pom: 'pom pom' - (alternative)
+//   pom-pom: 'fuzzy balls' - (alternative)
+//   pom-pom: 'round decorations' - (alternative)
+//   pom-pom: 'Strand of garland' - works well!
+//   pom-pom: 'Strand of colorful balls' - current
+// Disabled prompts:
+//   { id: 'feliz-navidad', prompt: 'Feliz Navidad!' } - direction not liked
 export const SAM_PROMPTS = [
-	{ id: 'feliz-navidad', prompt: 'Feliz Navidad!' },
-	{ id: 'pom-pom', prompt: 'garland' }
+	{ id: 'pom-pom', prompt: 'Strand of colorful balls' }
 ];
 
 // Simulation image path (relative to static/)

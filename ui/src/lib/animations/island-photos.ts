@@ -13,8 +13,8 @@ export const FADE_DURATION_MS = 1500; // Duration of fade in/out
 export const MAX_ACTIVE_ISLANDS = 2; // Maximum number of islands showing photos at once
 export const AVG_SPAWN_INTERVAL_MS = 6000; // Average time between photo spawns
 
-// Available photos in /static/content/
-const PHOTO_PATHS = [
+// Available photos in /static/content/ - can be updated dynamically
+let photoPaths: string[] = [
 	'/content/IMG_6648.jpeg',
 	'/content/IMG_6968.jpeg',
 	'/content/IMG_6971.jpeg',
@@ -28,6 +28,24 @@ const PHOTO_PATHS = [
 	'/content/IMG_7097.jpeg',
 	'/content/IMG_7121.jpeg'
 ];
+
+/**
+ * Set the available photo paths dynamically
+ * @param paths - Array of paths to photos (e.g., ['/content/photo1.jpg', ...])
+ */
+export function setPhotoPaths(paths: string[]): void {
+	if (paths.length > 0) {
+		photoPaths = paths;
+		console.log(`[island-photos] Updated photo paths: ${paths.length} images`);
+	}
+}
+
+/**
+ * Get the current list of photo paths
+ */
+export function getPhotoPaths(): string[] {
+	return [...photoPaths];
+}
 
 export interface IslandPhoto {
 	islandIndex: number;
@@ -92,7 +110,7 @@ export function createIslandPhotosAnimation(
 	 * Pick a random photo path
 	 */
 	function pickRandomPhoto(): string {
-		return PHOTO_PATHS[Math.floor(Math.random() * PHOTO_PATHS.length)];
+		return photoPaths[Math.floor(Math.random() * photoPaths.length)];
 	}
 
 	/**
@@ -216,6 +234,9 @@ export function createIslandPhotosAnimation(
 				cancelAnimationFrame(state.animationFrameId);
 				state.animationFrameId = null;
 			}
+			// Clear photos so they stop rendering
+			state.photos.clear();
+			onUpdate([]);
 		},
 
 		setIslands(islands: ComponentInfo[]) {
