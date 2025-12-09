@@ -14,6 +14,16 @@ export interface Quad {
 	bottomRight: Point;
 }
 
+// Cached WebGL resources to avoid creating too many contexts
+let cachedGLCanvas: HTMLCanvasElement | null = null;
+let cachedGL: WebGLRenderingContext | null = null;
+let cachedProgram: WebGLProgram | null = null;
+let cachedPositionBuffer: WebGLBuffer | null = null;
+let cachedTexture: WebGLTexture | null = null;
+let cachedPositionLoc: number = -1;
+let cachedResolutionLoc: WebGLUniformLocation | null = null;
+let cachedHomographyLoc: WebGLUniformLocation | null = null;
+
 /**
  * Compute a 3x3 homography matrix that maps unit square to the given quad
  * Uses the DLT (Direct Linear Transform) algorithm
@@ -93,33 +103,30 @@ function solveLinearSystem(A: number[][], b: number[]): number[] {
 }
 
 /**
- * Draw a texture onto a destination canvas with perspective transformation
- * Uses homography-based perspective-correct texture mapping
+ * Initialize or get cached WebGL resources
  */
-export function drawPerspective(
-	destCtx: CanvasRenderingContext2D,
-	sourceCanvas: HTMLCanvasElement,
-	destQuad: Quad
-): void {
-	const destCanvas = destCtx.canvas;
+function getOrCreateGLResources(width: number, height: number): {
+	gl: WebGLRenderingContext;
+	glCanvas: HTMLCanvasElement;
+} | null {
+	// Check if we need to recreate (size changed or not initialized)
+	if (cachedGLCanvas && cachedGL && cachedProgram) {
+		if (cachedGLCanvas.width !== width || cachedGLCanvas.height !== height) {
+			cachedGLCanvas.width = width;
+			cachedGLCanvas.height = height;
+		}
+		return { gl: cachedGL, glCanvas: cachedGLCanvas };
+	}
 
-	// Create WebGL canvas for perspective transform
+	// Create new WebGL canvas
 	const glCanvas = document.createElement('canvas');
-	glCanvas.width = destCanvas.width;
-	glCanvas.height = destCanvas.height;
+	glCanvas.width = width;
+	glCanvas.height = height;
 
 	const gl = glCanvas.getContext('webgl', { premultipliedAlpha: false });
 	if (!gl) {
-		console.error('WebGL not supported, falling back to basic draw');
-		fallbackDraw(destCtx, sourceCanvas, destQuad);
-		return;
+		return null;
 	}
-
-	// Compute homography from unit square to destination quad (in pixel coords)
-	const H = computeHomography(destQuad);
-
-	// Compute inverse homography (from dest pixels to source UV)
-	const Hinv = invertHomography(H, destCanvas.width, destCanvas.height);
 
 	// Vertex shader - simple fullscreen quad
 	const vertexShaderSource = `
@@ -161,50 +168,97 @@ export function drawPerspective(
 	// Compile shaders
 	const vertexShader = compileShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
 	const fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
-	if (!vertexShader || !fragmentShader) return;
+	if (!vertexShader || !fragmentShader) return null;
 
 	// Create program
 	const program = gl.createProgram();
-	if (!program) return;
+	if (!program) return null;
 	gl.attachShader(program, vertexShader);
 	gl.attachShader(program, fragmentShader);
 	gl.linkProgram(program);
 
 	if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
 		console.error('Program link error:', gl.getProgramInfoLog(program));
-		return;
+		return null;
 	}
-
-	gl.useProgram(program);
 
 	// Fullscreen quad (two triangles)
 	const positions = new Float32Array([
-		-1, -1,  1, -1,  -1, 1,
-		-1, 1,   1, -1,   1, 1,
+		-1, -1, 1, -1, -1, 1,
+		-1, 1, 1, -1, 1, 1
 	]);
 
-	// Set up position attribute
+	// Set up position buffer
 	const positionBuffer = gl.createBuffer();
 	gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
 	gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
-	const positionLoc = gl.getAttribLocation(program, 'a_position');
-	gl.enableVertexAttribArray(positionLoc);
-	gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
 
-	// Set uniforms
-	const resolutionLoc = gl.getUniformLocation(program, 'u_resolution');
-	gl.uniform2f(resolutionLoc, destCanvas.width, destCanvas.height);
-
-	const homographyLoc = gl.getUniformLocation(program, 'u_invHomography');
-	gl.uniformMatrix3fv(homographyLoc, false, new Float32Array(Hinv));
-
-	// Create and bind texture from source canvas
+	// Create texture
 	const texture = gl.createTexture();
 	gl.bindTexture(gl.TEXTURE_2D, texture);
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
 	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+	// Cache everything
+	cachedGLCanvas = glCanvas;
+	cachedGL = gl;
+	cachedProgram = program;
+	cachedPositionBuffer = positionBuffer;
+	cachedTexture = texture;
+	cachedPositionLoc = gl.getAttribLocation(program, 'a_position');
+	cachedResolutionLoc = gl.getUniformLocation(program, 'u_resolution');
+	cachedHomographyLoc = gl.getUniformLocation(program, 'u_invHomography');
+
+	// Delete shaders after linking (program keeps them)
+	gl.deleteShader(vertexShader);
+	gl.deleteShader(fragmentShader);
+
+	return { gl, glCanvas };
+}
+
+/**
+ * Draw a texture onto a destination canvas with perspective transformation
+ * Uses homography-based perspective-correct texture mapping
+ */
+export function drawPerspective(
+	destCtx: CanvasRenderingContext2D,
+	sourceCanvas: HTMLCanvasElement,
+	destQuad: Quad
+): void {
+	const destCanvas = destCtx.canvas;
+
+	// Get or create cached WebGL resources
+	const resources = getOrCreateGLResources(destCanvas.width, destCanvas.height);
+	if (!resources) {
+		console.error('WebGL not supported, falling back to basic draw');
+		fallbackDraw(destCtx, sourceCanvas, destQuad);
+		return;
+	}
+
+	const { gl, glCanvas } = resources;
+
+	// Use cached program
+	gl.useProgram(cachedProgram);
+
+	// Set up position attribute
+	gl.bindBuffer(gl.ARRAY_BUFFER, cachedPositionBuffer);
+	gl.enableVertexAttribArray(cachedPositionLoc);
+	gl.vertexAttribPointer(cachedPositionLoc, 2, gl.FLOAT, false, 0, 0);
+
+	// Compute homography from unit square to destination quad (in pixel coords)
+	const H = computeHomography(destQuad);
+
+	// Compute inverse homography (from dest pixels to source UV)
+	const Hinv = invertHomography(H, destCanvas.width, destCanvas.height);
+
+	// Set uniforms
+	gl.uniform2f(cachedResolutionLoc, destCanvas.width, destCanvas.height);
+	gl.uniformMatrix3fv(cachedHomographyLoc, false, new Float32Array(Hinv));
+
+	// Update texture with source canvas
+	gl.bindTexture(gl.TEXTURE_2D, cachedTexture);
 	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
 
 	// Clear and draw
@@ -215,13 +269,6 @@ export function drawPerspective(
 
 	// Copy WebGL result to destination canvas
 	destCtx.drawImage(glCanvas, 0, 0);
-
-	// Cleanup
-	gl.deleteTexture(texture);
-	gl.deleteBuffer(positionBuffer);
-	gl.deleteShader(vertexShader);
-	gl.deleteShader(fragmentShader);
-	gl.deleteProgram(program);
 }
 
 /**

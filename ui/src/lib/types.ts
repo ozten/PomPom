@@ -16,6 +16,16 @@ export interface CameraQuad {
 	imageHeight: number; // Actual camera image height
 }
 
+/**
+ * Shared animation clock for synchronized animations across pages
+ * Both /control and /projection use this to compute identical animation state
+ */
+export interface AnimationClock {
+	startedAt: number; // Timestamp (Date.now()) when animations started
+	seed: number; // Seed for deterministic randomness
+	sequenceNumber: number; // Increments each time animations restart
+}
+
 export interface AppState {
 	mode: 'idle' | 'calibrating' | 'projecting';
 	calibration: {
@@ -28,7 +38,10 @@ export interface AppState {
 		masks: TransformedMask[];
 		pomPoms?: PomPomPosition[]; // Detected pom-pom positions for spotlight animation
 		animationsEnabled?: boolean; // Master toggle for all animations (default: true)
+		islandPhotosPlaying?: boolean; // Play/pause for island photos animation (default: true)
+		happyBirthdayPlaying?: boolean; // Play/pause for happy birthday animation (default: false)
 	};
+	animationClock?: AnimationClock; // Shared clock for deterministic animation sync
 }
 
 export interface IslandComponent {

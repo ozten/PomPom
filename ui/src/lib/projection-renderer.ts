@@ -7,6 +7,12 @@ import type { AppState } from './types';
 import type { AnimationRenderState } from './animations/types';
 import type { IslandPhoto } from './animations/island-photos';
 import type { SpotlightInfo, SparkParticle } from './animations/spotlight';
+import type { IslandLetter } from './animations/happy-birthday';
+import {
+	LETTER_BACKGROUND_COLOR,
+	LETTER_TEXT_COLOR,
+	LETTER_FONT
+} from './animations/happy-birthday';
 import { PROJECTOR_WIDTH, PROJECTOR_HEIGHT } from './projection-config';
 
 // Re-export for backwards compatibility
@@ -59,6 +65,7 @@ export const MARKER_POSITIONS = getMarkerPositions();
  * @param islandsMask - The islands-only mask for clipping photos
  * @param spotlights - Spotlight positions and sizes to render
  * @param particles - Spark particles to render
+ * @param birthdayLetters - Letters to render in island positions for Happy Birthday animation
  */
 export function renderProjection(
 	ctx: CanvasRenderingContext2D,
@@ -69,7 +76,8 @@ export function renderProjection(
 	islandPhotos: IslandPhoto[] = [],
 	islandsMask?: HTMLCanvasElement,
 	spotlights: SpotlightInfo[] = [],
-	particles: SparkParticle[] = []
+	particles: SparkParticle[] = [],
+	birthdayLetters: IslandLetter[] = []
 ): void {
 	const { mode, calibration, projection } = state;
 
@@ -158,6 +166,14 @@ export function renderProjection(
 			renderParticles(ctx, particles);
 			ctx.restore();
 		}
+
+		// Render Happy Birthday letters if available (using screen blend for additive light)
+		if (birthdayLetters.length > 0 && islandsMask) {
+			ctx.save();
+			ctx.globalCompositeOperation = 'screen';
+			renderBirthdayLetters(ctx, birthdayLetters, islandsMask);
+			ctx.restore();
+		}
 	} else {
 		// Idle mode: solid color
 		ctx.fillStyle = projection.color;
@@ -168,6 +184,14 @@ export function renderProjection(
 			ctx.save();
 			ctx.globalCompositeOperation = 'screen';
 			renderIslandPhotos(ctx, islandPhotos, islandsMask);
+			ctx.restore();
+		}
+
+		// Still render birthday letters in idle mode for preview
+		if (birthdayLetters.length > 0 && islandsMask) {
+			ctx.save();
+			ctx.globalCompositeOperation = 'screen';
+			renderBirthdayLetters(ctx, birthdayLetters, islandsMask);
 			ctx.restore();
 		}
 	}
@@ -303,6 +327,72 @@ function renderParticles(ctx: CanvasRenderingContext2D, particles: SparkParticle
 		ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
 		ctx.fill();
 
+		ctx.restore();
+	}
+}
+
+/**
+ * Render Happy Birthday letters into island positions, clipped to the islands mask
+ * Each letter fills its island bounding box with a colored background and white text
+ */
+function renderBirthdayLetters(
+	ctx: CanvasRenderingContext2D,
+	letters: IslandLetter[],
+	islandsMask: HTMLCanvasElement
+): void {
+	for (const letter of letters) {
+		const opacity = letter.opacity ?? 1;
+		if (opacity <= 0) continue;
+
+		const { minX, minY, maxX, maxY } = letter.boundingBox;
+		const width = maxX - minX + 1;
+		const height = maxY - minY + 1;
+		const centerX = minX + width / 2;
+		const centerY = minY + height / 2;
+
+		// Create a temporary canvas for this letter
+		const tempCanvas = document.createElement('canvas');
+		tempCanvas.width = PROJECTOR_WIDTH;
+		tempCanvas.height = PROJECTOR_HEIGHT;
+		const tempCtx = tempCanvas.getContext('2d')!;
+
+		// Fill the bounding box with the background color
+		tempCtx.fillStyle = LETTER_BACKGROUND_COLOR;
+		tempCtx.fillRect(minX, minY, width, height);
+
+		// Draw the letter centered in the bounding box
+		tempCtx.fillStyle = LETTER_TEXT_COLOR;
+		tempCtx.font = LETTER_FONT;
+		tempCtx.textAlign = 'center';
+		tempCtx.textBaseline = 'middle';
+
+		// Scale font to fit the island if needed
+		const metrics = tempCtx.measureText(letter.letter);
+		const textWidth = metrics.width;
+		const textHeight = 72; // Approximate height from font size
+		const scaleX = (width * 0.8) / textWidth;
+		const scaleY = (height * 0.8) / textHeight;
+		const scale = Math.min(scaleX, scaleY, 1.5); // Cap scale to avoid too large
+
+		if (scale < 1) {
+			tempCtx.save();
+			tempCtx.translate(centerX, centerY);
+			tempCtx.scale(scale, scale);
+			tempCtx.fillText(letter.letter, 0, 0);
+			tempCtx.restore();
+		} else {
+			tempCtx.fillText(letter.letter, centerX, centerY);
+		}
+
+		// Apply the islands mask using destination-in
+		// This keeps only the parts that overlap with islands
+		tempCtx.globalCompositeOperation = 'destination-in';
+		tempCtx.drawImage(islandsMask, 0, 0);
+
+		// Draw the masked letter to the main canvas with opacity
+		ctx.save();
+		ctx.globalAlpha = opacity;
+		ctx.drawImage(tempCanvas, 0, 0);
 		ctx.restore();
 	}
 }

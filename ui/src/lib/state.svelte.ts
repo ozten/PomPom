@@ -12,6 +12,7 @@ export async function fetchState(): Promise<void> {
 			_state.mode = newState.mode;
 			_state.calibration = newState.calibration;
 			_state.projection = newState.projection;
+			_state.animationClock = newState.animationClock;
 		}
 	} catch (e) {
 		console.error('Failed to fetch state:', e);
@@ -29,6 +30,7 @@ export async function updateState(partial: Partial<AppState>): Promise<AppState>
 		_state.mode = newState.mode;
 		_state.calibration = newState.calibration;
 		_state.projection = newState.projection;
+		_state.animationClock = newState.animationClock;
 	}
 	return _state;
 }

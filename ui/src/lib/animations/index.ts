@@ -3,6 +3,14 @@
  */
 
 export * from './types';
+export * from './prng';
+export {
+	createClockProvider,
+	createAnimationClock,
+	getFallbackClockProvider,
+	resetFallbackClock,
+	type ClockProvider
+} from './clock';
 export {
 	createFelizNavidadAnimation,
 	CYCLE_DURATION_MS,
@@ -44,3 +52,13 @@ export {
 	type SparkParticle,
 	type SpotlightAnimation
 } from './spotlight';
+export {
+	createHappyBirthdayAnimation,
+	LETTER_DURATION_MS,
+	FADE_DURATION_MS as HAPPY_BIRTHDAY_FADE_DURATION_MS,
+	LETTER_BACKGROUND_COLOR,
+	LETTER_TEXT_COLOR,
+	LETTER_FONT,
+	type IslandLetter,
+	type HappyBirthdayAnimation
+} from './happy-birthday';

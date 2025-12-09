@@ -13,13 +13,18 @@
 		createWallTextureAnimation,
 		createSpotlightAnimation,
 		createIslandPhotosAnimation,
+		createHappyBirthdayAnimation,
+		createClockProvider,
 		type Animation,
 		type AnimationRenderState,
 		type SpotlightInfo,
 		type SparkParticle,
 		type SpotlightAnimation,
 		type IslandPhoto,
-		type IslandPhotosAnimation
+		type IslandPhotosAnimation,
+		type IslandLetter,
+		type HappyBirthdayAnimation,
+		type ClockProvider
 	} from '$lib/animations';
 	import { PROJECTOR_WIDTH as PROJ_WIDTH, PROJECTOR_HEIGHT as PROJ_HEIGHT } from '$lib/projection-config';
 
@@ -47,6 +52,14 @@
 	let islandPhotosAnim: IslandPhotosAnimation | null = null;
 	let islandPhotos: IslandPhoto[] = [];
 	let islandsMaskCanvas: HTMLCanvasElement | null = null;
+
+	// Happy Birthday animation
+	let happyBirthdayAnim: HappyBirthdayAnimation | null = null;
+	let happyBirthdayLetters: IslandLetter[] = [];
+
+	// Shared clock provider for synchronized animations
+	let clockProvider: ClockProvider | null = null;
+	let lastClockSequence = 0;
 
 	onMount(async () => {
 		startPolling(500);
@@ -88,6 +101,12 @@
 			render();
 		});
 
+		// Create happy birthday animation
+		happyBirthdayAnim = createHappyBirthdayAnimation((letters) => {
+			happyBirthdayLetters = letters;
+			render();
+		});
+
 		render();
 	});
 
@@ -108,6 +127,28 @@
 			img.src = imageData;
 		});
 	}
+
+	// Watch for animation clock changes in shared state
+	$effect(() => {
+		const animationClock = appState.current.animationClock;
+		if (animationClock && animationClock.sequenceNumber !== lastClockSequence) {
+			lastClockSequence = animationClock.sequenceNumber;
+			clockProvider = createClockProvider(animationClock);
+
+			// Set the clock provider on animations that support it
+			if (spotlightAnim) {
+				spotlightAnim.setClockProvider(clockProvider);
+			}
+			if (islandPhotosAnim) {
+				islandPhotosAnim.setClockProvider(clockProvider);
+			}
+			if (happyBirthdayAnim) {
+				happyBirthdayAnim.setClockProvider(clockProvider);
+			}
+
+			console.log(`[projection] Animation clock updated: seed=${animationClock.seed}, seq=${animationClock.sequenceNumber}`);
+		}
+	});
 
 	// Load masks from shared state when they change
 	let lastMaskState = '';
@@ -132,23 +173,33 @@
 		}
 	});
 
+	// Re-render whenever mode changes (to show calibration markers, projection content, etc.)
+	$effect(() => {
+		const _mode = appState.current.mode;
+		const _color = appState.current.projection.color;
+		// Trigger render on mode or color change
+		render();
+	});
+
 	onDestroy(() => {
 		stopPolling();
 		// Stop all animations
 		animations.forEach(anim => anim.stop());
 		spotlightAnim?.stop();
 		islandPhotosAnim?.stop();
+		happyBirthdayAnim?.stop();
 	});
 
-	// Watch for sub-masks (islands) in shared state to set up island photos animation
+	// Watch for sub-masks (islands) in shared state to set up island-based animations
 	let lastSubMasksState = '';
 	$effect(() => {
 		const masks = appState.current.projection.masks;
 		const wallMask = masks.find(m => m.id === 'wall-texture');
 
-		if (wallMask?.subMasks && islandPhotosAnim) {
+		if (wallMask?.subMasks) {
 			const islandComponents = wallMask.subMasks.islandComponents || [];
 			const currentState = `${islandComponents.length}:${wallMask.subMasks.islands.slice(0, 50)}`;
+			console.log('[projection] subMasks effect: islandComponents.length =', islandComponents.length, 'currentState differs?', currentState !== lastSubMasksState);
 
 			if (currentState !== lastSubMasksState) {
 				lastSubMasksState = currentState;
@@ -167,10 +218,16 @@
 					ctx.drawImage(img, 0, 0);
 					islandsMaskCanvas = canvas;
 
-					// Set island components for the photos animation and start it
+					// Set island components for island-based animations
 					if (componentsToUse.length > 0) {
-						islandPhotosAnim!.setIslands(componentsToUse);
-						islandPhotosAnim!.start();
+						if (islandPhotosAnim) {
+							islandPhotosAnim.setIslands(componentsToUse);
+							islandPhotosAnim.start();
+						}
+						if (happyBirthdayAnim) {
+							happyBirthdayAnim.setIslands(componentsToUse);
+							// Don't auto-start - controlled by play/pause on control page
+						}
 					}
 				};
 				img.src = imageSrc;
@@ -178,13 +235,12 @@
 		}
 	});
 
-	// Watch for pom-pom positions in shared state and mode changes
+	// Watch for pom-pom positions in shared state
 	let lastPomPomState = '';
 	$effect(() => {
 		const pomPoms = appState.current.projection.pomPoms;
-		const mode = appState.current.mode;
 		const animationsEnabled = appState.current.projection.animationsEnabled !== false;
-		const currentState = `${mode}:${animationsEnabled}:${pomPoms?.length || 0}`;
+		const currentState = `${animationsEnabled}:${pomPoms?.length || 0}`;
 
 		if (pomPoms && pomPoms.length > 0 && spotlightAnim) {
 			// Convert to PomPomInfo format expected by spotlight animation
@@ -204,8 +260,8 @@
 				spotlightAnim.setPomPoms(pomPomInfos);
 			}
 
-			// Start/stop based on mode AND animations enabled
-			if (mode === 'projecting' && animationsEnabled) {
+			// Start/stop based on animations enabled
+			if (animationsEnabled) {
 				spotlightAnim.start();
 			} else {
 				spotlightAnim.stop();
@@ -216,7 +272,10 @@
 	});
 
 	function render() {
-		if (!ctx) return;
+		if (!ctx) {
+			console.log('[projection] render() called but ctx is null');
+			return;
+		}
 		// Filter masks by enabled state and get corresponding animation states
 		const masks = appState.current.projection.masks;
 		const activeMasks: HTMLCanvasElement[] = [];
@@ -228,24 +287,28 @@
 				activeAnimStates.push(animationStates.get(mask.id) || { opacity: 1, color: '#FFD700' });
 			}
 		}
-		renderProjection(ctx, appState.current, markerImages, activeMasks, activeAnimStates, islandPhotos, islandsMaskCanvas || undefined, spotlights, particles);
+		renderProjection(ctx, appState.current, markerImages, activeMasks, activeAnimStates, islandPhotos, islandsMaskCanvas || undefined, spotlights, particles, happyBirthdayLetters);
 	}
 
-	// Start/stop animations based on mode, mask enabled state, AND master toggle
+	// Start/stop animations based on mask enabled state AND master toggle
+	// Note: Animations run regardless of mode to stay in sync with /control preview
 	$effect(() => {
 		const mode = appState.current.mode;
 		const masks = appState.current.projection.masks;
 		const animationsEnabled = appState.current.projection.animationsEnabled !== false; // Default true
-		const isProjecting = mode === 'projecting';
+		const photosPlaying = appState.current.projection.islandPhotosPlaying !== false; // Default true
+		const birthdayPlaying = appState.current.projection.happyBirthdayPlaying === true; // Default false
+
+		console.log('[projection] animation control effect:', { mode, animationsEnabled, birthdayPlaying, hasIslandsMask: !!islandsMaskCanvas, masksCount: masks.length });
 
 		// Build set of enabled mask IDs
 		const enabledMaskIds = new Set(
 			masks.filter(m => m.enabled !== false).map(m => m.id)
 		);
 
-		// Each animation runs only if projecting AND its mask is enabled AND animations are enabled
+		// Each animation runs if its mask is enabled AND animations are enabled
 		animations.forEach((anim, maskId) => {
-			const shouldRun = isProjecting && animationsEnabled && enabledMaskIds.has(maskId);
+			const shouldRun = animationsEnabled && enabledMaskIds.has(maskId);
 			if (shouldRun) {
 				anim.start();
 			} else {
@@ -253,23 +316,30 @@
 			}
 		});
 
-		// Also control spotlight and island photos animations
+		// Also control spotlight animation
 		if (spotlightAnim) {
-			if (isProjecting && animationsEnabled) {
+			if (animationsEnabled) {
 				// Let the pom-pom effect handle starting (it checks for pom-poms)
 			} else {
 				spotlightAnim.stop();
 			}
 		}
+
+		// Island photos animation: respects play/pause from shared state
 		if (islandPhotosAnim) {
-			if (isProjecting && animationsEnabled) {
-				// Start the animation if we have islands loaded
-				// The setIslands call happens in the subMasks effect
-				if (islandsMaskCanvas) {
-					islandPhotosAnim.start();
-				}
+			if (animationsEnabled && photosPlaying && islandsMaskCanvas) {
+				islandPhotosAnim.start();
 			} else {
 				islandPhotosAnim.stop();
+			}
+		}
+
+		// Happy Birthday animation: respects play/pause from shared state
+		if (happyBirthdayAnim) {
+			if (animationsEnabled && birthdayPlaying && islandsMaskCanvas) {
+				happyBirthdayAnim.start();
+			} else {
+				happyBirthdayAnim.stop();
 			}
 		}
 	});

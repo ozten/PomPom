@@ -6,9 +6,14 @@
  * 2. Every 2 seconds, a new spotlight spawns for the next pom-pom
  * 3. Each spotlight stays on its assigned pom-pom permanently
  * 4. End state: every pom-pom has its own spotlight
+ *
+ * Uses deterministic randomness via ClockProvider for synchronized animations
+ * across multiple pages.
  */
 
 import type { PomPomInfo } from '../pompom-detection';
+import type { ClockProvider } from './clock';
+import { getFallbackClockProvider } from './clock';
 
 // Configuration
 export const MAX_SPOTLIGHT_DIAMETER = 150;
@@ -62,6 +67,7 @@ export interface SpotlightState {
 	projectorHeight: number;
 	particles: SparkParticle[];
 	colorSampler: ((x: number, y: number) => string | null) | null;
+	clockProvider: ClockProvider;
 }
 
 export interface SpotlightAnimation {
@@ -70,6 +76,7 @@ export interface SpotlightAnimation {
 	stop(): void;
 	setPomPoms(pomPoms: PomPomInfo[]): void;
 	setColorSampler(sampler: (x: number, y: number) => string | null): void;
+	setClockProvider(clock: ClockProvider): void;
 	getSpotlights(): SpotlightInfo[];
 	getParticles(): SparkParticle[];
 }
@@ -144,7 +151,8 @@ export function createSpotlightAnimation(
 		projectorWidth,
 		projectorHeight,
 		particles: [],
-		colorSampler: null
+		colorSampler: null,
+		clockProvider: getFallbackClockProvider() // Default to fallback, can be set via setClockProvider
 	};
 
 	/**
@@ -192,6 +200,7 @@ export function createSpotlightAnimation(
 	/**
 	 * Create a new spotlight at a random position above the pom poms
 	 * Each spotlight targets ONE pom-pom and stays there
+	 * Uses seeded PRNG for deterministic positioning
 	 */
 	function createNewSpotlight(): SpotlightInternal | null {
 		if (state.pomPoms.length === 0) return null;
@@ -213,10 +222,17 @@ export function createSpotlightAnimation(
 		// Find the topmost pom pom to position spotlight above
 		const topY = Math.min(...state.pomPoms.map((p) => p.center.y - p.radius));
 
-		// Start position: random x within bounds, above the pom poms
+		// Get seeded PRNG for this spotlight's initial position
+		const spotlightId = state.nextSpotlightId;
+		const positionPRNG = state.clockProvider.getPRNG(`spotlight-position-${spotlightId}`);
+
+		// Start position: deterministic random x within bounds, above the pom poms
 		const margin = MAX_SPOTLIGHT_DIAMETER;
-		const startX = margin + Math.random() * (state.projectorWidth - margin * 2);
-		const startY = Math.max(margin, topY - 100 - Math.random() * 100);
+		const startX = margin + positionPRNG() * (state.projectorWidth - margin * 2);
+		const startY = Math.max(margin, topY - 100 - positionPRNG() * 100);
+
+		// Use clock elapsed time instead of performance.now()
+		const now = state.clockProvider.getElapsedTime();
 
 		const spotlight: SpotlightInternal = {
 			id: state.nextSpotlightId++,
@@ -226,7 +242,7 @@ export function createSpotlightAnimation(
 			opacity: 1,
 			targetPomPomIndex: targetPomPom.index,
 			phase: 'intro',
-			startTime: performance.now(),
+			startTime: now,
 			startX,
 			startY,
 			panStartTime: 0,
@@ -244,16 +260,21 @@ export function createSpotlightAnimation(
 	 * Emit a spark particle from the pom-pom's edge
 	 * Particles emit perpendicular to the garland line (up/down relative to the chain)
 	 * with ±25° variation for a fuller field
+	 * Uses seeded PRNG for deterministic particle properties
 	 */
 	function emitParticle(spotlight: SpotlightInternal): void {
 		if (!spotlight.pomPomColor) return;
 
+		// Get seeded PRNG for this particle
+		const particleId = state.nextParticleId;
+		const particlePRNG = state.clockProvider.getPRNG(`particle-${spotlight.id}-${particleId}`);
+
 		// Emit in perpendicular direction with ±25° variation
-		// Randomly choose "up" or "down" the perpendicular (180° apart)
-		const baseAngle = spotlight.perpendicularAngle + (Math.random() < 0.5 ? 0 : Math.PI);
+		// Deterministically choose "up" or "down" the perpendicular (180° apart)
+		const baseAngle = spotlight.perpendicularAngle + (particlePRNG() < 0.5 ? 0 : Math.PI);
 
 		// Add ±25° (±0.436 radians) variation
-		const variation = (Math.random() - 0.5) * 2 * (25 * Math.PI / 180);
+		const variation = (particlePRNG() - 0.5) * 2 * (25 * Math.PI / 180);
 		const angle = baseAngle + variation;
 
 		// Start position: pom-pom center + radius + offset
@@ -274,7 +295,7 @@ export function createSpotlightAnimation(
 			color: spotlight.pomPomColor,
 			distanceTraveled: 0,
 			maxDistance: SPARK_LIFETIME_DISTANCE,
-			size: SPARK_SIZE * (0.5 + Math.random() * 0.5), // Vary size slightly
+			size: SPARK_SIZE * (0.5 + particlePRNG() * 0.5), // Vary size slightly with seeded random
 			opacity: 1
 		};
 
@@ -418,9 +439,13 @@ export function createSpotlightAnimation(
 
 	/**
 	 * Main animation loop
+	 * Uses clock provider's elapsed time for deterministic timing across pages
 	 */
-	function animate(now: number): void {
+	function animate(): void {
 		if (!state.running) return;
+
+		// Use clock provider's elapsed time for deterministic sync
+		const now = state.clockProvider.getElapsedTime();
 
 		// Calculate delta time
 		const deltaTime = state.lastFrameTime > 0 ? now - state.lastFrameTime : 16;
@@ -514,6 +539,10 @@ export function createSpotlightAnimation(
 
 		setColorSampler(sampler: (x: number, y: number) => string | null) {
 			state.colorSampler = sampler;
+		},
+
+		setClockProvider(clock: ClockProvider) {
+			state.clockProvider = clock;
 		},
 
 		getSpotlights(): SpotlightInfo[] {

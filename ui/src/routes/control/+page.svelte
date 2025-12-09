@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { startPolling, stopPolling, appState, updateState } from '$lib/state.svelte';
 	import { detectMarkers, checkServerHealth, type DetectedMarker } from '$lib/aruco';
 	import {
@@ -28,14 +28,23 @@
 		createWallTextureAnimation,
 		createIslandPhotosAnimation,
 		createSpotlightAnimation,
+		createHappyBirthdayAnimation,
+		createAnimationClock,
+		createClockProvider,
 		setPhotoPaths,
+		LETTER_BACKGROUND_COLOR,
+		LETTER_TEXT_COLOR,
+		LETTER_FONT,
 		type Animation,
 		type AnimationRenderState,
 		type IslandPhoto,
 		type IslandPhotosAnimation,
+		type IslandLetter,
+		type HappyBirthdayAnimation,
 		type SpotlightInfo,
 		type SparkParticle,
-		type SpotlightAnimation
+		type SpotlightAnimation,
+		type ClockProvider
 	} from '$lib/animations';
 	import { PROJECTOR_WIDTH as PROJ_WIDTH, PROJECTOR_HEIGHT as PROJ_HEIGHT } from '$lib/projection-config';
 
@@ -127,6 +136,14 @@
 	let islandPhotosAnim: IslandPhotosAnimation | null = null;
 	let islandPhotos = $state<IslandPhoto[]>([]);
 	let islandsMaskCanvas = $state<HTMLCanvasElement | null>(null);
+	// Play/pause state derived from shared state (default: true for photos)
+	let islandPhotosPlaying = $derived(appState.current.projection.islandPhotosPlaying !== false);
+
+	// Happy Birthday animation state
+	let happyBirthdayAnim: HappyBirthdayAnimation | null = null;
+	let happyBirthdayLetters = $state<IslandLetter[]>([]);
+	// Play/pause state derived from shared state (default: false for birthday)
+	let happyBirthdayPlaying = $derived(appState.current.projection.happyBirthdayPlaying === true);
 
 	// Content refresh state
 	let isRefreshingContent = $state(false);
@@ -142,6 +159,9 @@
 	let spotlightAnim: SpotlightAnimation | null = null;
 	let spotlights = $state<SpotlightInfo[]>([]);
 	let particles = $state<SparkParticle[]>([]);
+
+	// Shared clock provider for synchronized animations
+	let clockProvider: ClockProvider | null = null;
 
 	// Per-mask enabled state and regeneration tracking
 	let enabledMasks = $state<Set<string>>(new Set(['pom-pom', 'wall-texture']));
@@ -244,6 +264,12 @@
 			renderSimulation();
 		});
 
+		// Create happy birthday animation
+		happyBirthdayAnim = createHappyBirthdayAnimation((letters) => {
+			happyBirthdayLetters = letters;
+			renderSimulation();
+		});
+
 		// Auto-refresh content photos on load
 		refreshContent();
 
@@ -306,6 +332,7 @@
 		// Stop all animations
 		animations.forEach(anim => anim.stop());
 		islandPhotosAnim?.stop();
+		happyBirthdayAnim?.stop();
 		spotlightAnim?.stop();
 		// Stop webcam
 		stopWebcam();
@@ -542,7 +569,8 @@
 			islandPhotos,
 			islandsMaskCanvas || undefined,
 			spotlights,
-			particles
+			particles,
+			happyBirthdayLetters
 		);
 
 		// 3. Draw projection onto wall using WebGL perspective transform
@@ -572,31 +600,73 @@
 		}
 	}
 
-	// Start/stop animations based on mode AND mask enabled state
+	// Start/stop animations based on mode, animationsEnabled, AND mask enabled state
 	$effect(() => {
+		// Track only the specific state we care about
 		const mode = appState.current.mode;
-		const isProjecting = mode === 'projecting';
+		const animEnabled = appState.current.projection.animationsEnabled !== false;
+		const pomPomsLength = appState.current.projection.pomPoms?.length ?? 0;
+		const currentEnabledMasks = enabledMasks;
+		const currentIslandsMaskCanvas = islandsMaskCanvas;
+		const photosPlaying = islandPhotosPlaying;
+		const birthdayPlaying = happyBirthdayPlaying;
 
-		// Each animation runs only if projecting AND its mask is enabled
-		animations.forEach((anim, maskId) => {
-			const shouldRun = isProjecting && enabledMasks.has(maskId);
-			if (shouldRun) {
-				anim.start();
-			} else {
-				anim.stop();
+		// Use untrack for the actual animation control to avoid creating more dependencies
+		untrack(() => {
+			const isProjecting = mode === 'projecting';
+
+			// Each mask animation runs only if projecting AND animations enabled AND its mask is enabled
+			animations.forEach((anim, maskId) => {
+				const shouldRun = isProjecting && animEnabled && currentEnabledMasks.has(maskId);
+				if (shouldRun) {
+					anim.start();
+				} else {
+					anim.stop();
+				}
+			});
+
+			// Spotlight animation runs if projecting AND animations enabled AND pom-poms are set
+			if (spotlightAnim) {
+				const hasPomPoms = pomPomsLength > 0;
+				if (isProjecting && animEnabled && hasPomPoms) {
+					spotlightAnim.start();
+				} else {
+					spotlightAnim.stop();
+				}
+			}
+
+			// Island photos animation runs if animations enabled AND islands are set AND playing
+			// (doesn't require projecting mode - allows preview on control page)
+			if (islandPhotosAnim) {
+				// Check if islands have been detected (islandsMaskCanvas is set)
+				if (animEnabled && currentIslandsMaskCanvas && photosPlaying) {
+					islandPhotosAnim.start();
+				} else {
+					islandPhotosAnim.stop();
+				}
+			}
+
+			// Happy Birthday animation runs if animations enabled AND islands are set AND playing
+			// (doesn't require projecting mode - allows preview on control page)
+			if (happyBirthdayAnim) {
+				if (animEnabled && currentIslandsMaskCanvas && birthdayPlaying) {
+					happyBirthdayAnim.start();
+				} else {
+					happyBirthdayAnim.stop();
+				}
 			}
 		});
 	});
 
 	// Re-render when state changes (only in dev mode)
 	$effect(() => {
-		// Track relevant state
+		// Track relevant state changes that should trigger re-render
 		const _ = appState.current.calibration.status;
 		const __ = detectedMarkers;
 		const ___ = imageMode; // Also track mode changes
 
-		// Re-render (renderSimulation already checks for live mode)
-		renderSimulation();
+		// Use untrack to prevent renderSimulation from adding more dependencies
+		untrack(() => renderSimulation());
 	});
 
 	async function startCalibration() {
@@ -722,8 +792,31 @@
 	}
 
 	async function startProjecting() {
+		// Clear detected markers so green circles stop showing
+		detectedMarkers = [];
+
+		// Create a new animation clock for synchronized animations
+		const previousSequence = appState.current.animationClock?.sequenceNumber ?? 0;
+		const animationClock = createAnimationClock(previousSequence);
+		clockProvider = createClockProvider(animationClock);
+
+		console.log(`[control] Animation clock created: seed=${animationClock.seed}, seq=${animationClock.sequenceNumber}`);
+
+		// Set the clock provider on animations that support it
+		if (spotlightAnim) {
+			spotlightAnim.setClockProvider(clockProvider);
+		}
+		if (islandPhotosAnim) {
+			islandPhotosAnim.setClockProvider(clockProvider);
+		}
+		if (happyBirthdayAnim) {
+			happyBirthdayAnim.setClockProvider(clockProvider);
+		}
+
+		// Update state with mode and the new animation clock
 		await updateState({
-			mode: 'projecting'
+			mode: 'projecting',
+			animationClock
 		});
 	}
 
@@ -1068,11 +1161,20 @@
 			// Save the islands mask canvas for rendering
 			islandsMaskCanvas = result.islands;
 
-			// Pass island info to the photos animation and start it
+			// Pass island info to animations and start them if animations are enabled
+			// (islandComponents was already computed above for subMasks)
 			if (islandPhotosAnim) {
-				const islandComponents = result.stats.components.filter(c => c.isIsland);
 				islandPhotosAnim.setIslands(islandComponents);
-				islandPhotosAnim.start();
+				if (appState.current.projection.animationsEnabled !== false && appState.current.mode === 'projecting' && islandPhotosPlaying) {
+					islandPhotosAnim.start();
+				}
+			}
+
+			if (happyBirthdayAnim) {
+				happyBirthdayAnim.setIslands(islandComponents);
+				if (appState.current.projection.animationsEnabled !== false && appState.current.mode === 'projecting' && happyBirthdayPlaying) {
+					happyBirthdayAnim.start();
+				}
 			}
 
 			console.log('Sub-masks saved to state, animation started');
@@ -1311,7 +1413,7 @@
 				}
 			});
 
-			// Pass pom-pom positions (with colors) to spotlight animation and start it
+			// Pass pom-pom positions (with colors) to spotlight animation and start it if animations are enabled
 			if (spotlightAnim && pomPomPositions.length > 0) {
 				// Convert back to PomPomInfo format expected by spotlight animation
 				const pomPomInfos = pomPomPositions.map(p => ({
@@ -1324,7 +1426,9 @@
 					color: p.color
 				}));
 				spotlightAnim.setPomPoms(pomPomInfos);
-				spotlightAnim.start();
+				if (appState.current.projection.animationsEnabled !== false && appState.current.mode === 'projecting') {
+					spotlightAnim.start();
+				}
 			}
 
 			console.log('Spotlight animation started with', pomPomPositions.length, 'pom-poms');
@@ -1745,6 +1849,25 @@
 						style="background: #333;"
 						use:drawScaledCanvas={islandDetectionResult.water}
 					></canvas>
+				</div>
+			</div>
+
+			<!-- Island Animation Controls -->
+			<div class="mt-4 pt-3 border-t border-gray-700">
+				<p class="text-xs text-gray-400 mb-2">Island Animations:</p>
+				<div class="flex gap-3">
+					<button
+						class="px-3 py-1 rounded text-sm {islandPhotosPlaying ? 'bg-green-600 hover:bg-green-700' : 'bg-gray-600 hover:bg-gray-700'}"
+						onclick={() => updateState({ projection: { ...appState.current.projection, islandPhotosPlaying: !islandPhotosPlaying } })}
+					>
+						{islandPhotosPlaying ? 'Pause' : 'Play'} Photos
+					</button>
+					<button
+						class="px-3 py-1 rounded text-sm {happyBirthdayPlaying ? 'bg-pink-600 hover:bg-pink-700' : 'bg-gray-600 hover:bg-gray-700'}"
+						onclick={() => updateState({ projection: { ...appState.current.projection, happyBirthdayPlaying: !happyBirthdayPlaying } })}
+					>
+						{happyBirthdayPlaying ? 'Pause' : 'Play'} Birthday
+					</button>
 				</div>
 			</div>
 		</div>

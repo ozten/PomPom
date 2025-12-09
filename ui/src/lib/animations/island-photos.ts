@@ -2,11 +2,16 @@
  * Island Photos Animation
  *
  * Displays photos in up to 2 randomly selected islands at a time.
- * Every 5 seconds, re-rolls which islands are active and assigns new random photos.
+ * Uses probabilistic spawning with seeded PRNG for deterministic behavior.
  * Photos are scaled to fill each island's bounding box.
+ *
+ * Uses deterministic randomness via ClockProvider for synchronized animations
+ * across multiple pages.
  */
 
 import type { ComponentInfo } from '../island-detection';
+import type { ClockProvider } from './clock';
+import { getFallbackClockProvider } from './clock';
 
 export const DISPLAY_DURATION_MS = 10000; // Total time a photo displays (including fade)
 export const FADE_DURATION_MS = 1500; // Duration of fade in/out
@@ -62,6 +67,7 @@ export interface IslandPhotosState {
 	running: boolean;
 	animationFrameId: number | null;
 	imagesLoaded: Map<string, HTMLImageElement>; // Cache of loaded images
+	clockProvider: ClockProvider; // For synchronized timing and deterministic randomness
 }
 
 export interface IslandPhotosAnimation {
@@ -69,6 +75,7 @@ export interface IslandPhotosAnimation {
 	start(): void;
 	stop(): void;
 	setIslands(islands: ComponentInfo[]): void;
+	setClockProvider(provider: ClockProvider): void;
 	getPhotos(): IslandPhoto[];
 }
 
@@ -84,7 +91,8 @@ export function createIslandPhotosAnimation(
 		photos: new Map(),
 		running: false,
 		animationFrameId: null,
-		imagesLoaded: new Map()
+		imagesLoaded: new Map(),
+		clockProvider: getFallbackClockProvider()
 	};
 
 	/**
@@ -107,10 +115,11 @@ export function createIslandPhotosAnimation(
 	}
 
 	/**
-	 * Pick a random photo path
+	 * Pick a random photo path using seeded PRNG
 	 */
 	function pickRandomPhoto(): string {
-		return photoPaths[Math.floor(Math.random() * photoPaths.length)];
+		const prng = state.clockProvider.getPRNG('island-photos-pick');
+		return photoPaths[Math.floor(prng() * photoPaths.length)];
 	}
 
 	/**
@@ -146,8 +155,9 @@ export function createIslandPhotosAnimation(
 
 		if (availableIslands.length === 0) return;
 
-		// Pick a random available island
-		const island = availableIslands[Math.floor(Math.random() * availableIslands.length)];
+		// Pick a random available island using seeded PRNG
+		const prng = state.clockProvider.getPRNG('island-photos-island');
+		const island = availableIslands[Math.floor(prng() * availableIslands.length)];
 		const islandIndex = state.islands.indexOf(island);
 		const photoPath = pickRandomPhoto();
 
@@ -164,16 +174,17 @@ export function createIslandPhotosAnimation(
 		});
 	}
 
-	let lastTickTime = 0;
+	let lastElapsedTime = 0;
 
 	/**
 	 * Animation loop - updates opacity and probabilistically spawns new photos
 	 */
-	function tick(now: number) {
+	function tick() {
 		if (!state.running) return;
 
-		const deltaMs = lastTickTime > 0 ? now - lastTickTime : 16;
-		lastTickTime = now;
+		const now = state.clockProvider.getElapsedTime();
+		const deltaMs = lastElapsedTime > 0 ? now - lastElapsedTime : 16;
+		lastElapsedTime = now;
 
 		let needsUpdate = false;
 
@@ -201,7 +212,8 @@ export function createIslandPhotosAnimation(
 		// Probability per frame = deltaMs / AVG_SPAWN_INTERVAL_MS
 		if (state.photos.size < MAX_ACTIVE_ISLANDS) {
 			const spawnProbability = deltaMs / AVG_SPAWN_INTERVAL_MS;
-			if (Math.random() < spawnProbability) {
+			const prng = state.clockProvider.getPRNG('island-photos-spawn');
+			if (prng() < spawnProbability) {
 				addNewPhoto(now);
 				needsUpdate = true;
 			}
@@ -222,7 +234,7 @@ export function createIslandPhotosAnimation(
 		start() {
 			if (state.running) return;
 			state.running = true;
-			lastTickTime = 0; // Reset so first frame doesn't have huge delta
+			lastElapsedTime = 0; // Reset so first frame doesn't have huge delta
 
 			// Start animation loop
 			state.animationFrameId = requestAnimationFrame(tick);
@@ -244,6 +256,10 @@ export function createIslandPhotosAnimation(
 			// Clear existing photos when islands change
 			state.photos.clear();
 			onUpdate([]);
+		},
+
+		setClockProvider(provider: ClockProvider) {
+			state.clockProvider = provider;
 		},
 
 		getPhotos(): IslandPhoto[] {
