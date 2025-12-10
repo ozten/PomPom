@@ -982,12 +982,15 @@
 			const { quad, imageSize } = getCurrentQuadAndSize();
 			const transformedWallMask = transformMasksToProjector([mask as unknown as HTMLImageElement], quad, imageSize)[0];
 
-			// Add to existing masks
+			// Add to existing masks, preserving subMasks if they exist
+			const existingWallMask = appState.current.projection.masks.find(m => m.id === 'wall-texture');
 			const wallMaskData = {
 				id: 'wall-texture',
 				imageData: transformedWallMask.toDataURL('image/png'),
 				bounds: { x: 0, y: 0, width: transformedWallMask.width, height: transformedWallMask.height },
-				enabled: true
+				enabled: true,
+				// Preserve subMasks if they exist
+				...(existingWallMask?.subMasks ? { subMasks: existingWallMask.subMasks } : {})
 			};
 
 			// Update shared state with new mask added
@@ -1066,12 +1069,15 @@
 			const { quad, imageSize } = getCurrentQuadAndSize();
 			const transformedWallMask = transformMasksToProjector([maskCanvas as unknown as HTMLImageElement], quad, imageSize)[0];
 
-			// Add to existing masks
+			// Add to existing masks, preserving subMasks if they exist
+			const existingWallMask = appState.current.projection.masks.find(m => m.id === 'wall-texture');
 			const wallMaskData = {
 				id: 'wall-texture',
 				imageData: transformedWallMask.toDataURL('image/png'),
 				bounds: { x: 0, y: 0, width: transformedWallMask.width, height: transformedWallMask.height },
-				enabled: true
+				enabled: true,
+				// Preserve subMasks if they exist
+				...(existingWallMask?.subMasks ? { subMasks: existingWallMask.subMasks } : {})
 			};
 
 			// Update shared state with new mask added
@@ -1560,12 +1566,20 @@
 			console.log('Transformed', transformedMasks.length, 'masks using', imageMode, 'mode quad');
 
 			// Convert transformed masks to base64 and save to shared state
-			const masksForState = transformedMasks.map((canvas, i) => ({
-				id: results[i].id,
-				imageData: canvas.toDataURL('image/png'),
-				bounds: { x: 0, y: 0, width: canvas.width, height: canvas.height },
-				enabled: true
-			}));
+			// Preserve existing subMasks for masks that already exist
+			const existingMasks = appState.current.projection.masks;
+			const masksForState = transformedMasks.map((canvas, i) => {
+				const maskId = results[i].id;
+				const existingMask = existingMasks.find(m => m.id === maskId);
+				return {
+					id: maskId,
+					imageData: canvas.toDataURL('image/png'),
+					bounds: { x: 0, y: 0, width: canvas.width, height: canvas.height },
+					enabled: true,
+					// Preserve subMasks if they exist for this mask
+					...(existingMask?.subMasks ? { subMasks: existingMask.subMasks } : {})
+				};
+			});
 			await updateState({
 				projection: {
 					...appState.current.projection,
